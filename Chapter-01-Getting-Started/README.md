@@ -22,7 +22,3 @@ Rob J Hyndman & George Athanasopoulos  <https://otexts.com/fpp2/>.
 | Mixed model (regression + ARIMA errors) | `elecdaily` | `auto.arima(xreg=)` | `statsforecast AutoARIMA(X=)` |
 | Seasonal naïve benchmark | `elecdaily`, `ausbeer` | `snaive()` | `fpp.snaive()` |
 | Simulated futures | `austa` | `simulate(ets)` | `ETSModel.simulate()` |
-
-## Run
-Open `Forecasting-principles-and-practice.Rproj` in RStudio → open `ch01_notes.Rmd` → **Knit**
-(or run chunk by chunk). Tests: `bash tests/run_tests.sh 1`.
