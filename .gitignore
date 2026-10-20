@@ -1,0 +1,20 @@
+# R / RStudio
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+*.Rproj.user
+# knitted output (re-create by knitting the .Rmd)
+*.html
+*_files/
+*_cache/
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+.venv/
+# OS
+.DS_Store
+# the textbook PDF is copyrighted -- never commit it
+*.pdf

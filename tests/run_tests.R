@@ -1,0 +1,10 @@
+# Run ALL model tests in R and Python.  From the project root (RStudio: Source this file).
+#   R tests      : tests/R/test-*.R  (testthat)
+#   Python tests : tests/python/test_*.py (pytest, via reticulate's Python)
+library(testthat)
+cat("\n================ R model tests ================\n")
+r_res <- testthat::test_dir("tests/R", reporter = "summary", stop_on_failure = FALSE)
+cat("\n================ Python model tests ================\n")
+py <- tryCatch(reticulate::py_exe(), error = function(e) Sys.which("python3"))
+status <- system2(py, c("-m", "pytest", "-q", "tests/python"))
+if (status != 0) warning("Some Python tests failed (see output above).")

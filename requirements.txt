@@ -1,0 +1,15 @@
+# Python packages for the Python half of every chapter
+numpy
+pandas
+scipy
+matplotlib
+seaborn
+statsmodels>=0.14
+statsforecast>=1.7
+pmdarima
+scikit-learn
+hierarchicalforecast
+openpyxl
+pytest
+jupyter
+nbformat
