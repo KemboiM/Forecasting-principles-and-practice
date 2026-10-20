@@ -1,0 +1,487 @@
+---
+title: "Chapter 1 — Getting started"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 1** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and exercises are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+
+# Learning goals
+
+* Know what makes something *easy* or *hard* to forecast.
+* Separate **forecasting**, **planning** and **goals**.
+* Know the three model families the book uses: **explanatory**, **time series** and **mixed**.
+* Learn the **five steps** of every forecasting task.
+* Think of a forecast as a **probability distribution**, not one number.
+
+# 1.1 What can be forecast?
+
+How predictable an event or quantity is depends on three things:
+
+1. **how well we understand the factors** that drive it;
+2. **how much data** is available;
+3. **whether the forecast itself changes the outcome** (e.g. exchange rates — a published
+   forecast moves the market, so it defeats itself).
+
+Electricity demand scores well on all three (temperature, calendar and economy drive it;
+years of hourly data exist; a forecast doesn't change how hot it is), so short-term demand
+forecasts can be very accurate. Exchange rates score badly on the third point, so the
+"forecast" is usually close to "tomorrow equals today" — the **naïve** method.
+
+Two ideas to keep for the whole book:
+
+* A good model captures the *genuine patterns and relationships* in historical data
+  but does **not** replicate past events that will not happen again.
+* Good forecasting models allow for **change** — the environment is always changing.
+
+### A first look: an easy series and a hard series {.tabset .tabset-pills}
+
+Daily electricity demand in Victoria has a clear temperature-driven pattern; the daily
+Google closing price wanders with no pattern we can exploit.
+
+#### R
+
+```{r easy-hard}
+p1 <- autoplot(elecdaily[, "Demand"]) + ggtitle("Easy-ish: daily electricity demand (Victoria, 2014)") +
+  ylab("GW") + xlab("Week")
+p2 <- autoplot(goog200) + ggtitle("Hard: Google daily closing price") + ylab("US$") + xlab("Day")
+gridExtra::grid.arrange(p1, p2, ncol = 1)
+```
+
+#### Python
+
+```{python easy-hard-py}
+elecdaily = fpp.load("elecdaily")
+goog200 = fpp.load("goog200")
+fig, ax = plt.subplots(2, 1, figsize=(8, 6))
+fpp.autoplot(elecdaily["Demand"], ax=ax[0], title="Easy-ish: daily electricity demand (Victoria, 2014)",
+             xlab="Week", ylab="GW")
+fpp.autoplot(goog200, ax=ax[1], title="Hard: Google daily closing price", xlab="Day", ylab="US$")
+plt.tight_layout(); plt.show()
+```
+
+# 1.2 Forecasting, planning and goals
+
+| Term | Meaning |
+|---|---|
+| **Forecasting** | Predicting the future as accurately as possible using all available information (history + knowledge of future events). |
+| **Goals** | What you *would like* to happen. Should be linked to forecasts and plans — often they aren't. |
+| **Planning** | The *response* to forecasts and goals: the actions needed to make forecasts match goals. |
+
+Forecast horizons and their business uses:
+
+* **Short-term** — scheduling staff, production, transport (needs demand forecasts).
+* **Medium-term** — buying raw materials, hiring, buying machinery.
+* **Long-term** — strategic planning: market opportunities, environment, internal resources.
+
+An organisation needs an approach that covers all three, connected to its planning.
+
+# 1.3 Determining what to forecast
+
+Before any modelling, decide:
+
+* **What exactly** — every product or product groups? every outlet or regions? weekly,
+  monthly or annual totals?
+* **The horizon** — one month, six months, ten years ahead? This decides which methods fit.
+* **How often** forecasts are needed — frequent forecasts must be automated.
+
+Then find or collect the data. Most of the work is often here.
+
+# 1.4 Forecasting data and methods
+
+* **No data / irrelevant data** → **qualitative (judgmental)** forecasting — Chapter 4.
+* **Numerical data about the past** that we can reasonably assume will continue → **quantitative** forecasting.
+
+Most quantitative problems use **time series** data (observed at regular intervals).
+The aim is to estimate how the sequence will continue. A simple start is a time plot
+followed by an extrapolation.
+
+### Time series data and a simple extrapolation {.tabset .tabset-pills}
+
+The book's example is quarterly Australian beer production with forecasts for the next
+two years (Figure 1.1). Exponential smoothing (Chapter 7) captures both the trend and
+the seasonality.
+
+#### R
+
+```{r beer-fc}
+beer2 <- window(ausbeer, start = 1992)
+fc_beer <- forecast(ets(beer2), h = 8)
+autoplot(fc_beer) + ggtitle("Australian quarterly beer production") + ylab("Megalitres")
+```
+
+#### Python
+
+```{python beer-fc-py}
+from statsforecast.models import AutoETS
+
+beer2 = fpp.window(fpp.load("ausbeer"), start=1992)
+ets_beer = AutoETS(season_length=4).fit(beer2.to_numpy())
+print("Selected model:", ets_beer.model_["method"])
+p = ets_beer.predict(h=8, level=[80, 95])
+idx = pd.period_range(beer2.index[-1] + 1, periods=8, freq="Q")
+fc_beer = fpp.Forecast("ETS", beer2, pd.Series(p["mean"], idx),
+                       pd.DataFrame({80: p["lo-80"], 95: p["lo-95"]}, idx),
+                       pd.DataFrame({80: p["hi-80"], 95: p["hi-95"]}, idx),
+                       pd.Series(np.nan, beer2.index), pd.Series(np.nan, beer2.index))
+fpp.plot_forecast(fc_beer, title="Australian quarterly beer production", ylab="Megalitres")
+plt.show()
+```
+
+### Predictor variables: three kinds of model
+
+Suppose we want hourly electricity demand (ED) for a hot region in summer.
+
+* **Explanatory model** — demand is a function of *predictors*:
+  $ED = f(\text{current temp}, \text{economy}, \text{population}, \text{time of day}, \text{day of week}, \text{error})$.
+* **Time series model** — demand depends only on its own past:
+  $ED_{t+1} = f(ED_t, ED_{t-1}, ED_{t-2}, \dots, \text{error})$.
+* **Mixed model** (dynamic regression / transfer function / panel ...) — both:
+  $ED_{t+1} = f(ED_t, \text{current temp}, \text{time of day}, \text{day of week}, \text{error})$.
+
+Why choose a time series model even when predictors exist?
+(1) the system may not be understood or measurable; (2) you would need forecasts of the
+predictors themselves; (3) you may only need *what* will happen, not *why*;
+(4) it may simply be more accurate.
+
+The steps below fit **one of each** to daily Victorian electricity demand (`elecdaily`)
+and are revisited in the model-testing section at the end of these notes.
+
+### Fit the three model types {.tabset .tabset-pills}
+
+Training data = first 300 days of 2014; test data = the last 65 days.
+
+#### R
+
+```{r three-models}
+train <- subset(elecdaily, end = 300)
+test  <- subset(elecdaily, start = 301)
+
+# 1. Explanatory model: regression on temperature (U-shaped) and working day
+fit_expl <- tslm(Demand ~ Temperature + I(Temperature^2) + WorkDay, data = train)
+
+# 2. Time series model: demand from its own past (auto-selected ETS, weekly seasonality)
+fit_ts <- ets(train[, "Demand"])
+
+# 3. Mixed model: regression with ARIMA errors (dynamic regression, Chapter 9)
+xreg_tr <- cbind(Temp = train[, "Temperature"], Temp2 = train[, "Temperature"]^2,
+                 WorkDay = train[, "WorkDay"])
+fit_mixed <- auto.arima(train[, "Demand"], xreg = xreg_tr)
+
+summary(fit_expl)$coefficients
+fit_ts
+fit_mixed
+```
+
+#### Python
+
+```{python three-models-py}
+import statsmodels.formula.api as smf
+from statsforecast.models import AutoETS, AutoARIMA, ARIMA
+from statsforecast.arima import arima_string
+
+elec = fpp.load("elecdaily")
+train, test = elec.iloc[:300], elec.iloc[300:]
+
+# 1. Explanatory model (same formula as tslm)
+fit_expl = smf.ols("Demand ~ Temperature + I(Temperature**2) + WorkDay", data=train).fit()
+
+# 2. Time series model: AutoETS (statsforecast port of forecast::ets)
+fit_ts = AutoETS(season_length=7).fit(train["Demand"].to_numpy())
+
+# 3. Mixed model: AutoARIMA with exogenous regressors (= auto.arima(xreg=))
+def xreg(d):
+    return np.column_stack([d["Temperature"], d["Temperature"] ** 2, d["WorkDay"]])
+fit_mixed = AutoARIMA(season_length=7).fit(train["Demand"].to_numpy(), X=xreg(train))
+# Python's automatic search may choose different orders from R (it can even differ between
+# computers), so also fit exactly the model R chose, ARIMA(1,0,0)(2,0,0)[7] errors:
+fit_mixed_r = ARIMA(order=(1, 0, 0), seasonal_order=(2, 0, 0), season_length=7,
+                    include_mean=True).fit(train["Demand"].to_numpy(), X=xreg(train))
+
+print(fit_expl.params.round(4))
+print("ETS model:", fit_ts.model_["method"])
+print("Python's auto choice:", arima_string(fit_mixed.model_))
+print("R's model in Python :", {k: round(float(v), 4) for k, v in fit_mixed_r.model_["coef"].items()})
+```
+
+# 1.5 Some case studies
+
+The book describes four consulting projects. My summary of the forecasting lesson in each:
+
+| Case | Client & task | Key difficulty / lesson |
+|---|---|---|
+| 1 | Disposable tableware maker; monthly forecasts for hundreds of items | In-house methods (averages, short regressions) ignored trend/seasonality properly; needed sound, automatic methods. |
+| 2 | Australian government, Pharmaceutical Benefit Scheme budget | Hundreds of monthly series with trend, seasonality and sudden policy-driven jumps; method had to be robust and automatic. |
+| 3 | Car fleet company; resale value of leased vehicles | Lots of data but uncooperative experts; understanding drivers of value matters as much as the forecast. |
+| 4 | Airline; weekly passengers per route and class | Holidays, sporting events, a pilots' strike, a competitor's entry and a temporary seat-class reshuffle all disturb the data. |
+
+### Case 4 data: weekly Melbourne–Sydney air traffic {.tabset .tabset-pills}
+
+The `melsyd` data in `fpp2` are from this kind of project (Ansett economy, business and first class).
+The strike (1989), the reclassification of seats (1992) and missing values are all visible.
+
+#### R
+
+```{r melsyd}
+autoplot(melsyd, facets = TRUE) + ggtitle("Ansett weekly passengers: Melbourne–Sydney") +
+  xlab("Year") + ylab("Thousands")
+```
+
+#### Python
+
+```{python melsyd-py}
+melsyd = fpp.load("melsyd")
+axs_ = fpp.autoplot(melsyd, facets=True, title="Ansett weekly passengers: Melbourne–Sydney", xlab="Year")
+plt.show()
+```
+
+# 1.6 The basic steps in a forecasting task
+
+1. **Problem definition** — often the hardest step: who needs the forecasts, how they will be used,
+   how forecasting fits into the organisation.
+2. **Gathering information** — (a) statistical data and (b) expert knowledge of the people who
+   collect the data and use the forecasts. Old data may suffer structural change, but good models
+   handle gradual change — don't throw away good data.
+3. **Preliminary (exploratory) analysis** — always graph first: patterns, trend, seasonality,
+   business cycles, outliers, relationships between variables (Chapters 2 and 6).
+4. **Choosing and fitting models** — compare two or three candidate models; each rests on assumptions
+   and has parameters estimated from history (Chapters 5, 7, 8, 9, 10, 11).
+5. **Using and evaluating the model** — forecast, then judge accuracy once the actual data arrive
+   (Chapter 3), and handle practical issues such as missing values and outliers (Chapter 12).
+
+### The five steps as code {.tabset .tabset-pills}
+
+The same five steps on the beer data (only steps 3–5 are code).
+
+#### R
+
+```{r five-steps}
+# Step 3: explore
+beer_train <- window(ausbeer, start = 1992, end = c(2006, 4))
+beer_test  <- window(ausbeer, start = 2007)
+ggseasonplot(beer_train) + ggtitle("Step 3 — explore: seasonal plot")
+# Step 4: choose and fit two or three models
+f1 <- snaive(beer_train, h = length(beer_test))
+f2 <- forecast(ets(beer_train), h = length(beer_test))
+# Step 5: evaluate once the actual data are available
+rbind(SeasonalNaive = accuracy(f1, beer_test)["Test set", c("RMSE", "MAE", "MAPE", "MASE")],
+      ETS           = accuracy(f2, beer_test)["Test set", c("RMSE", "MAE", "MAPE", "MASE")])
+```
+
+#### Python
+
+```{python five-steps-py}
+ausbeer = fpp.load("ausbeer")
+beer_train = fpp.window(ausbeer, start=1992, end=(2006, 4))
+beer_test = fpp.window(ausbeer, start=2007)
+h = len(beer_test)
+# Step 3: explore
+fpp.seasonplot(beer_train, title="Step 3 — explore: seasonal plot"); plt.show()
+# Step 4: choose and fit two or three models
+f1 = fpp.snaive(beer_train, h=h)
+f2 = AutoETS(season_length=4).fit(beer_train.to_numpy()).predict(h=h)["mean"]
+# Step 5: evaluate
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+pd.DataFrame({
+    "SeasonalNaive": fpp.accuracy(f1, beer_test).loc["Test set", cols],
+    "ETS": fpp.accuracy(f2, beer_test, train=beer_train).loc["Test set", cols],
+}).T.round(3)
+```
+
+# 1.7 The statistical forecasting perspective
+
+The thing we forecast is unknown, so treat it as a **random variable** $y_t$.
+The further ahead we forecast, the more uncertain it is.
+
+* We can imagine many **possible futures** (sample paths) — Figure 1.2.
+* The **forecast distribution** $y_t \mid \mathcal{I}$ is the set of values $y_t$ could take,
+  with their probabilities, given everything we know ($\mathcal{I}$).
+* The **point forecast** $\hat{y}_t$ is the **mean** of that distribution (sometimes the median).
+* A **prediction interval** gives a range that contains the future value with a stated
+  probability, e.g. 80% or 95%.
+
+Notation: $\hat{y}_{t|t-1}$ = forecast of $y_t$ using information up to $t-1$;
+$\hat{y}_{T+h|T}$ = $h$-step forecast using data up to time $T$.
+
+### Ten possible futures (Figure 1.2) {.tabset .tabset-pills}
+
+International visitors to Australia (`austa`), with ten simulated sample paths from an
+ETS model. *(Simulated paths are random, so R and Python paths differ; the spread is what matters.)*
+
+#### R
+
+```{r futures}
+set.seed(1967)
+fit_austa <- ets(austa)
+paths <- do.call(cbind, lapply(1:10, function(i) simulate(fit_austa, nsim = 10)))
+colnames(paths) <- paste("Future", 1:10)
+autoplot(austa) + autolayer(paths) +
+  ggtitle("Total international visitors to Australia") + ylab("Millions of visitors") + xlab("Year") +
+  guides(colour = guide_legend(title = NULL))
+```
+
+#### Python
+
+```{python futures-py}
+from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+
+austa = fpp.load("austa")
+# R chose ETS(A,A,N) for austa; statsmodels' ETSModel lets us simulate from it
+ets_austa = ETSModel(austa.astype(float).set_axis(austa.index.to_timestamp()), error="add",
+                     trend="add").fit(disp=False)
+np.random.seed(1967)
+sims = ets_austa.simulate(nsimulations=10, repetitions=10, anchor="end")
+t = fpp.ts_time(austa)
+fig, ax = plt.subplots()
+ax.plot(t, austa.to_numpy(), color="black", label="Data")
+for i in range(10):
+    ax.plot(t[-1] + np.arange(1, 11), sims.iloc[:, i].to_numpy(), lw=1, label=f"Future {i + 1}")
+ax.set_title("Total international visitors to Australia"); ax.set_ylabel("Millions of visitors")
+ax.legend(fontsize=7, ncol=2); plt.show()
+```
+
+### Forecast mean with 80% and 95% prediction intervals (Figure 1.3) {.tabset .tabset-pills}
+
+#### R
+
+```{r fc-austa}
+fc_austa <- forecast(fit_austa, h = 10)
+autoplot(fc_austa) + ylab("Millions of visitors") + xlab("Year")
+fc_austa
+```
+
+#### Python
+
+```{python fc-austa-py}
+m = AutoETS(season_length=1).fit(austa.to_numpy())
+print("Selected model:", m.model_["method"])        # ETS(A,A,N), same as R
+p = m.predict(h=10, level=[80, 95])
+idx = pd.period_range(austa.index[-1] + 1, periods=10, freq="Y")
+fc_austa = fpp.Forecast("ETS(A,A,N)", austa, pd.Series(p["mean"], idx),
+                        pd.DataFrame({80: p["lo-80"], 95: p["lo-95"]}, idx),
+                        pd.DataFrame({80: p["hi-80"], 95: p["hi-95"]}, idx),
+                        pd.Series(np.nan, austa.index), pd.Series(np.nan, austa.index))
+fpp.plot_forecast(fc_austa, ylab="Millions of visitors"); plt.show()
+fc_austa.summary().round(4)
+```
+
+# Model testing — every model used in this chapter
+
+Chapter 1 uses four models: the **explanatory regression**, the **ETS time series model**,
+the **mixed (regression + ARIMA errors) model** — all on `elecdaily` — and the **ETS(A,A,N)**
+model on `austa`. Each is now tested on data it has *not* seen.
+
+* `elecdaily`: train on days 1–300, test on days 301–365.
+  The explanatory and mixed models are given the *actual* test-period temperatures
+  (an *ex-post* forecast, Section 5.6), which flatters them slightly.
+* `austa`: train on 1980–2005, test on 2006–2015.
+
+### Test-set accuracy {.tabset .tabset-pills}
+
+#### R
+
+```{r model-testing}
+h <- nrow(test)
+newx <- data.frame(Temperature = test[, "Temperature"], WorkDay = test[, "WorkDay"])
+fc_expl  <- forecast(fit_expl, newdata = newx)
+fc_ts    <- forecast(fit_ts, h = h)
+xreg_te  <- cbind(Temp = test[, "Temperature"], Temp2 = test[, "Temperature"]^2,
+                  WorkDay = test[, "WorkDay"])
+fc_mixed <- forecast(fit_mixed, xreg = xreg_te)
+fc_naive <- snaive(train[, "Demand"], h = h)            # benchmark
+
+austa_tr <- window(austa, end = 2005); austa_te <- window(austa, start = 2006)
+fc_austa_test <- forecast(ets(austa_tr, model = "AAN", damped = FALSE), h = length(austa_te))
+
+acc <- function(fc, x) accuracy(fc, x)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]
+results_r <- rbind(
+  "elecdaily: explanatory (tslm)"     = acc(fc_expl,  test[, "Demand"]),
+  "elecdaily: time series (ETS)"      = acc(fc_ts,    test[, "Demand"]),
+  "elecdaily: mixed (reg + ARIMA)"    = acc(fc_mixed, test[, "Demand"]),
+  "elecdaily: seasonal naive (bench)" = acc(fc_naive, test[, "Demand"]),
+  "austa: ETS(A,A,N)"                 = acc(fc_austa_test, austa_te))
+round(results_r, 3)
+```
+
+#### Python
+
+```{python model-testing-py}
+h = len(test)
+y_tr = train["Demand"]
+fc_expl = fit_expl.predict(test).to_numpy()
+fc_ts = fit_ts.predict(h=h)["mean"]
+fc_mixed = fit_mixed.predict(h=h, X=xreg(test))["mean"]
+fc_mixed_r = fit_mixed_r.predict(h=h, X=xreg(test))["mean"]
+fc_naive = fpp.snaive(y_tr, h=h)
+
+austa_tr = fpp.window(austa, end=2005); austa_te = fpp.window(austa, start=2006)
+fc_austa_test = AutoETS(season_length=1, model="AAN", damped=False).fit(austa_tr.to_numpy()).predict(h=len(austa_te))["mean"]
+
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+acc = lambda f, x, tr: fpp.accuracy(f, x, train=tr).loc["Test set", cols]
+results_py = pd.DataFrame({
+    "elecdaily: explanatory (OLS)":       acc(fc_expl, test["Demand"], y_tr),
+    "elecdaily: time series (AutoETS)":   acc(fc_ts, test["Demand"], y_tr),
+    "elecdaily: mixed (Python auto ARIMA)": acc(fc_mixed, test["Demand"], y_tr),
+    "elecdaily: mixed (R's ARIMA orders)":  acc(fc_mixed_r, test["Demand"], y_tr),
+    "elecdaily: seasonal naive (bench)":  fpp.accuracy(fc_naive, test["Demand"]).loc["Test set", cols],
+    "austa: ETS(A,A,N)":                  acc(fc_austa_test, austa_te, austa_tr),
+}).T
+results_py.round(3)
+```
+
+### What the test shows
+
+* Using temperature (explanatory and mixed models) beats the pure time series models
+  for electricity demand — temperature is the key driver (a point made in Section 1.1).
+* The mixed model is usually the best: it uses the predictors **and** the remaining
+  autocorrelation in the errors.
+* All models beat or match the seasonal naïve benchmark; any model that cannot beat a
+  benchmark should be discarded (Chapter 3).
+* **R vs Python.** Where the model is fully specified (the regression, the ARIMA orders, the
+  seasonal naïve benchmark) R and Python agree to rounding — compare the R row with the
+  "R's ARIMA orders" Python row. Python's *automatic* ARIMA search may pick different orders
+  from R, and can even differ from one computer to another. *Automatic* ETS selection and
+  likelihood optimisation can differ slightly (here R picks ETS(M,Ad,M) and Python ETS(M,N,M)
+  for `elecdaily`; for `austa` both fit ETS(A,A,N) but land on different starting values),
+  because the two optimisers stop at different optima. Always print the chosen model in both
+  languages before comparing accuracy.
+
+# Key takeaways
+
+* Predictability depends on understanding the drivers, having data, and whether forecasts
+  affect the outcome.
+* Forecasts ≠ goals ≠ plans.
+* Three model families: explanatory, time series, mixed — choose by data, accuracy and use.
+* Five steps: define → gather → explore → fit → use & evaluate.
+* A forecast is a **distribution**: report a point forecast **and** prediction intervals.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*

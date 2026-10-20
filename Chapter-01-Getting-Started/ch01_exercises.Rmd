@@ -1,0 +1,121 @@
+---
+title: "Chapter 1 — Exercises"
+subtitle: "Section 1.8 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+```
+
+> **Acknowledgement.** Exercises from Section 1.8 of *Forecasting: Principles and Practice*
+> (2nd ed.) by **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>).
+> The questions are paraphrased; the answers are my own.
+
+Chapter 1 has two conceptual exercises about the case studies in Section 1.5. They need
+reasoning rather than code, but where data exist (Case 4) I add a short analysis in both languages.
+
+# Exercise 1 — Possible predictor variables for Cases 3 and 4
+
+*For Cases 3 and 4 in Section 1.5, list possible predictor variables that might be useful,
+assuming the relevant data are available.*
+
+## Case 3 — resale value of leased vehicles
+
+| Group | Candidate predictors |
+|---|---|
+| The vehicle | make, model, body type, engine size, fuel type, transmission, colour, options/trim level |
+| Its use | odometer reading at sale, age at sale (lease length), accident and service history, condition grade |
+| The lease | lessee type (private vs. corporate fleet), region where it was used |
+| The market | new-car price of the same model, whether the model has been replaced or facelifted, used-car supply, fuel prices, interest rates, consumer confidence, exchange rate (affects import prices), season/month of sale |
+| The sale | sales channel (auction vs. dealer), location of sale |
+
+## Case 4 — weekly air passengers by route and class
+
+| Group | Candidate predictors |
+|---|---|
+| Calendar | school holidays in each city (they differ by state), public holidays, Easter/Christmas, week of year |
+| Events | major sporting events, conferences and festivals (and which city hosts them), strikes |
+| Price & product | own ticket prices by class, competitors' prices, seat capacity per class (the reclassification trial), number of flights / aircraft size |
+| Competition | entry/exit of competing (cut-price) airlines, competitor capacity |
+| Marketing | advertising campaigns, loyalty-programme promotions |
+| Economy | GDP / business activity (business class), consumer confidence, fuel prices, exchange rate (tourism) |
+
+### Supporting analysis: what the `melsyd` data show {.tabset .tabset-pills}
+
+The weekly Ansett Melbourne–Sydney series shows why several of these predictors matter:
+the 1989 pilots' strike (zero traffic), the 1992 seat reclassification (economy falls while
+business rises), missing values, and a strong holiday effect at the start of each year.
+
+#### R
+
+```{r ex1-melsyd}
+autoplot(melsyd[, "Economy.Class"]) +
+  ggtitle("Economy class passengers: Melbourne–Sydney") + xlab("Year") + ylab("Thousands")
+
+# Quantify the events: weekly mean per year and number of missing / zero weeks
+econ <- melsyd[, "Economy.Class"]
+yearly <- data.frame(year = floor(time(econ)), econ = as.numeric(econ))
+aggregate(econ ~ year, data = yearly, FUN = function(v) round(mean(v), 1))
+c(missing_weeks = sum(is.na(econ)), zero_weeks = sum(econ == 0, na.rm = TRUE))
+```
+
+#### Python
+
+```{python ex1-melsyd-py}
+melsyd = fpp.load("melsyd")
+econ = melsyd["Economy.Class"]
+econ.attrs = dict(melsyd.attrs)
+fpp.autoplot(econ, title="Economy class passengers: Melbourne–Sydney", xlab="Year", ylab="Thousands")
+plt.show()
+
+yearly = pd.DataFrame({"year": np.floor(fpp.ts_time(econ)).astype(int), "econ": econ.to_numpy()})
+print(yearly.groupby("year")["econ"].mean().round(1))
+print({"missing_weeks": int(econ.isna().sum()), "zero_weeks": int((econ == 0).sum())})
+```
+
+# Exercise 2 — The five steps for Case 3
+
+*For Case 3 in Section 1.5, describe the five steps of forecasting in the context of this project.*
+
+1. **Problem definition.** Forecast the resale value of each leased vehicle at the end of its
+   three-year lease, so the company can price leases and control profit. Agree with management
+   on the unit (each vehicle), horizon (3 years ahead), accuracy measure (e.g. MAE in dollars)
+   and how the forecasts will be used (lease pricing, fleet purchase decisions, sales timing).
+   Bring the resale specialists in early — their cooperation is part of the problem.
+2. **Gathering information.** Collect the company's historical records of purchased vehicles
+   and their eventual resale prices, plus vehicle attributes, usage (km, condition) and market
+   data (new-car prices, used-car indices, fuel prices, interest rates). Capture the
+   specialists' knowledge of what drives prices (e.g. model changes, colour preferences).
+3. **Preliminary (exploratory) analysis.** Plot resale value against age, kilometres, make and
+   model; look for trends over time (e.g. falling values of large cars), seasonality in sale
+   prices, outliers (damaged vehicles) and strong relationships between predictors.
+4. **Choosing and fitting models.** Compare a few candidates — e.g. a regression model of resale
+   value on vehicle and market predictors (Chapter 5), possibly with time-series terms for the
+   market trend (Chapter 9), against a simple benchmark such as "same depreciation rate as similar
+   vehicles last year". Use training/test splits by sale date.
+5. **Using and evaluating the model.** Produce resale forecasts (with prediction intervals) for every
+   vehicle as it is leased; once vehicles are sold, compare forecasts with actual prices, monitor
+   accuracy by make/model, and re-estimate regularly. Present results in a way that supports the
+   specialists rather than threatening them.
+
+*(Conceptual exercise — no code required.)*
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*

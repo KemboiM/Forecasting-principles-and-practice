@@ -69,7 +69,7 @@ bash tests/run_tests.sh        # all chapters, R then Python
 bash tests/run_tests.sh 7      # one chapter
 ```
 
-In RStudio: `source("tests/run_tests.R")`.
+In RStudio (Console): `source("tests/run_tests.R")`, then `run_tests(1)` for one chapter or `run_tests()` for all.
 
 The Python tests also compare results with reference values produced by R (`tests/reference/`).
 The comparison is strict where both languages use the same algorithm, such as benchmark methods,

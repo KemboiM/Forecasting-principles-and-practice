@@ -11,4 +11,8 @@ else
   Rscript -e "testthat::test_dir('tests/R', reporter='summary')"
 fi
 echo "================ Python model tests ================"
-if [ -n "$CH" ]; then python3 -m pytest -q "tests/python/test_ch$CH.py"; else python3 -m pytest -q tests/python; fi
+# Use the project's "fpp" virtualenv (made by R/setup_python.R) if it exists, else python3
+PY=python3
+[ -x "$HOME/.virtualenvs/fpp/bin/python" ] && PY="$HOME/.virtualenvs/fpp/bin/python"
+echo "Using Python: $PY"
+if [ -n "$CH" ]; then "$PY" -m pytest -q "tests/python/test_ch$CH.py"; else "$PY" -m pytest -q tests/python; fi
