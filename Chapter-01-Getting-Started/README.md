@@ -1,7 +1,7 @@
 # Chapter 1 — Getting started
 
 Following Chapter 1 of *Forecasting: Principles and Practice* (2nd ed.) by
-Rob J Hyndman & George Athanasopoulos — <https://otexts.com/fpp2/>.
+Rob J Hyndman & George Athanasopoulos  <https://otexts.com/fpp2/>.
 
 | File | What it is |
 |---|---|
