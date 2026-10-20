@@ -6,10 +6,8 @@ This repository holds my notes and exercise solutions, chapter by chapter, as I 
 > OTexts: Melbourne, Australia.** <https://otexts.com/fpp2/>
 
 ## Acknowledgement
-
-I am **following the authors, Rob J Hyndman and George Athanasopoulos**, and their book's teaching.
 The structure, the methods, the datasets (R packages `fpp2`, `fma`, `expsmooth`, `forecast`) and
-the exercises all come from them. The explanations here are my own summaries of their teaching. The
+the exercises all come from the author(s). The explanations here are my own summaries of their teaching. The
 Python versions are my translations of their R code. The goal is to learn each method in both
 languages and to check that the two agree. Please read and cite the original book, which is free
 online. This repo does not contain the book itself.
@@ -20,8 +18,8 @@ Every chapter folder has:
 
 | File | Contents |
 |---|---|
-| `chNN_notes.Rmd` | The chapter's teaching, section by section. **Every step has an R tab and a Python tab.** Ends with a *Model testing* section that fits **every model in the chapter** and compares their test-set accuracy. |
-| `chNN_exercises.Rmd` | Every end-of-chapter exercise, solved in **R and Python**, with interpretation. |
+| `chNN_notes.Rmd` | The chapter's teaching, section by section. Every step has an R tab and a Python tab. Ends with a *Model testing* section that fits every model in the chapter and compares their test-set accuracy. |
+| `chNN_exercises.Rmd` | Every end-of-chapter exercise, solved in R and Python, with interpretation. |
 | `chNN_*_python.ipynb` | Python-only notebooks generated from the `.Rmd` files, for Jupyter or VS Code. |
 | `README.md` | Section map and the list of models tested. |
 
@@ -48,7 +46,7 @@ R/install_packages.R  # run once: installs every R package the book uses
 R/setup_python.R      # run once: creates the "fpp" Python virtualenv used from RStudio
 R/export_data.R       # exports all book datasets to data/*.csv so Python uses identical data
 python/fpp.py         # Python versions of forecast-package tools (naive, snaive, rwf, accuracy, tsCV, BoxCox, ...)
-python/rmd_to_ipynb.py# builds the Python-only notebooks from the .Rmd files
+python/rmd_to_ipynb.py# builds the Python-only notebooks from the.Rmd files
 data/                 # every fpp2 / fma / expsmooth dataset as CSV (+ data/external for exercise files)
 tests/                # automated tests: every model in every chapter, in R (testthat) and Python (pytest)
 docs/CONVENTIONS.md   # how chapters are built
