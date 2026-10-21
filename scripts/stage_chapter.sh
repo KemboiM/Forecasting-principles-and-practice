@@ -1,6 +1,3 @@
-#!/usr/bin/env bash
-# Stage ONE chapter (its folder + its test files) so it can be committed and pushed on its own.
-# Usage (from the project root):  bash scripts/stage_chapter.sh 3
 # It only runs `git add` -- you commit and push yourself.
 set -e
 cd "$(dirname "$0")/.."
