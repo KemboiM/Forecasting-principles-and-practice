@@ -1,7 +1,6 @@
 # -----------------------------------------------------------------------------
 # R/setup_python.R  -- run ONCE (from the project root in RStudio).
-# Creates a Python virtual environment called "fpp" with every package the
-# Python halves of the chapters need, so RStudio can run the ```{python} chunks.
+# Creates a Python virtual environment called "fpp" with every package
 # -----------------------------------------------------------------------------
 if (!requireNamespace("reticulate", quietly = TRUE)) install.packages("reticulate")
 library(reticulate)
