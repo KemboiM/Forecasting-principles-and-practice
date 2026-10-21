@@ -46,7 +46,7 @@ R/install_packages.R  # run once: installs every R package the book uses
 R/setup_python.R      # run once: creates the "fpp" Python virtualenv used from RStudio
 R/export_data.R       # exports all book datasets to data/*.csv so Python uses identical data
 python/fpp.py         # Python versions of forecast-package tools (naive, snaive, rwf, accuracy, tsCV, BoxCox, ...)
-python/rmd_to_ipynb.py# builds the Python-only notebooks from the.Rmd files
+python/rmd_to_ipynb.py# builds the Python-only notebooks from the. Rmd files
 data/                 # every fpp2 / fma / expsmooth dataset as CSV (+ data/external for exercise files)
 tests/                # automated tests: every model in every chapter, in R (testthat) and Python (pytest)
 docs/CONVENTIONS.md   # how chapters are built
@@ -54,11 +54,10 @@ docs/CONVENTIONS.md   # how chapters are built
 
 ## Getting started (RStudio)
 
-1. Open **`Forecasting-principles-and-practice.Rproj`** in RStudio.
+1.Create and Open **`Forecasting-principles-and-practice.Rproj`** in RStudio.
 2. Install the R packages once: `source("R/install_packages.R")`
 3. Set up Python once: `source("R/setup_python.R")`, then *Session → Restart R*.
-4. Open a chapter's `chNN_notes.Rmd` and **Knit**, or run it chunk by chunk. The `{python}` chunks run through `reticulate`.
-5. (Optional) To rebuild the CSV data from the R packages: `source("R/export_data.R")`.
+4. Open a chapter's `chNN_notes.Rmd` and Knit, or run it chunk by chunk. The `{python}` chunks run through `reticulate`.
 
 ## Testing every model
 
@@ -66,28 +65,6 @@ docs/CONVENTIONS.md   # how chapters are built
 bash tests/run_tests.sh        # all chapters, R then Python
 bash tests/run_tests.sh 7      # one chapter
 ```
-
-In RStudio (Console): `source("tests/run_tests.R")`, then `run_tests(1)` for one chapter or `run_tests()` for all.
-
-The Python tests also compare results with reference values produced by R (`tests/reference/`).
-The comparison is strict where both languages use the same algorithm, such as benchmark methods,
-regressions and fixed ARIMA models. Where the optimisers differ, the tests check structure instead
-and the notes discuss the differences.
-
-## Git workflow: one chapter at a time
-
-I publish this repo one chapter at a time. Each chapter is one commit that contains its folder
-plus its test files:
-
-```bash
-bash scripts/stage_chapter.sh 2      # stages Chapter-02-* and tests/*/*ch02* (nothing is committed or pushed)
-git commit -m "Chapter 2: Time series graphics"
-git push
-```
-
-In RStudio, open the **Terminal** tab and run the stage script, or tick the same files in the
-**Git** tab. Then click *Commit* and *Push*. *Pull* before you start each session.
-
 ## Licence note
 
 My code is free to reuse. The book's text, figures and data belong to the authors and their
