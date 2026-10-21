@@ -479,8 +479,8 @@ results_py.round(3)
 * Predictability depends on understanding the drivers, having data, and whether forecasts
   affect the outcome.
 * Forecasts ≠ goals ≠ plans.
-* Three model families: explanatory, time series, mixed — choose by data, accuracy and use.
-* Five steps: define → gather → explore → fit → use & evaluate.
+* Three model families: explanatory, time series, mixed — choose by data, accuracy, and use.
+* Five steps: define, gather, explore, fit, use & evaluate.
 * A forecast is a **distribution**: report a point forecast **and** prediction intervals.
 
 *Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
