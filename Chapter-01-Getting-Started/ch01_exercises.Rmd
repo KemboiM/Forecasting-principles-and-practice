@@ -1,7 +1,7 @@
 ---
 title: "Chapter 1 — Exercises"
 subtitle: "Section 1.8 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
-author: "Milsort Kemboi"
+Tests By: "Milsort Kemboi"
 date: "`r Sys.Date()`"
 output:
   html_document:
