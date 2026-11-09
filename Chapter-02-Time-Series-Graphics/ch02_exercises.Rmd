@@ -1,0 +1,488 @@
+---
+title: "Chapter 2 — Exercises"
+subtitle: "Section 2.10 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+retail_file <- "../data/external/retail.xlsx"
+if (!file.exists(retail_file)) {
+  try(download.file("https://otexts.com/fpp2/extrafiles/retail.xlsx", retail_file, mode = "wb", quiet = TRUE),
+      silent = TRUE)
+}
+has_retail <- file.exists(retail_file)
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+pd.set_option("display.width", 160, "display.max_columns", 20)
+from statsmodels.tsa.stattools import acf
+
+RETAIL_FILE = "../data/external/retail.xlsx"
+if not os.path.exists(RETAIL_FILE):
+    try:
+        import urllib.request
+        urllib.request.urlretrieve("https://otexts.com/fpp2/extrafiles/retail.xlsx", RETAIL_FILE)
+    except Exception:
+        pass
+HAS_RETAIL = os.path.exists(RETAIL_FILE)
+```
+
+> **Acknowledgement.** Exercises from Section 2.10 of *Forecasting: Principles and Practice*
+> (2nd ed.) by **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>).
+> The questions are paraphrased; the answers are my own.
+
+*Note on data files.* Exercise 2 uses `tute1.csv` (stored in `data/external/`). Exercise 3
+uses `retail.xlsx` from the book website; the code downloads it into `data/external/` the first
+time (if the download fails, save <https://otexts.com/fpp2/extrafiles/retail.xlsx> there yourself).
+Those chunks are skipped automatically when the file is missing.
+
+# Exercise 1 — `gold`, `woolyrnq` and `gas`
+
+*Find out what the series represent (`help`), (a) plot each, (b) find each frequency,
+(c) use `which.max()` to find the outlier in `gold`.*
+
+* `gold` — daily morning gold prices (US$), 1 Jan 1985 – 31 Mar 1989 (1108 trading days).
+* `woolyrnq` — quarterly woollen yarn production in Australia (tonnes), Mar 1965 – Sep 1994.
+* `gas` — monthly Australian gas production, 1956–1995.
+
+### (a) Time plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex1-plots}
+autoplot(gold) + ggtitle("Daily morning gold price (US$)") + xlab("Day")
+autoplot(woolyrnq) + ggtitle("Quarterly woollen yarn production, Australia") + ylab("Tonnes")
+autoplot(gas) + ggtitle("Monthly gas production, Australia")
+```
+
+#### Python
+
+```{python ex1-plots-py}
+gold, wool, gas = fpp.load("gold"), fpp.load("woolyrnq"), fpp.load("gas")
+p_ = fpp.autoplot(gold, title="Daily morning gold price (US$)", xlab="Day")
+plt.show()
+p_ = fpp.autoplot(wool, title="Quarterly woollen yarn production, Australia", ylab="Tonnes")
+plt.show()
+p_ = fpp.autoplot(gas, title="Monthly gas production, Australia")
+plt.show()
+```
+
+### (b) Frequencies and (c) the outlier in `gold` {.tabset .tabset-pills}
+
+#### R
+
+```{r ex1-freq}
+c(gold = frequency(gold), woolyrnq = frequency(woolyrnq), gas = frequency(gas))
+which.max(gold)
+gold[which.max(gold)]
+```
+
+#### Python
+
+```{python ex1-freq-py}
+print({"gold": fpp.frequency(gold), "woolyrnq": fpp.frequency(wool), "gas": fpp.frequency(gas)})
+pos = int(np.nanargmax(gold.to_numpy())) + 1     # +1: R counts from 1
+print("which.max:", pos, " value:", np.nanmax(gold.to_numpy()))
+```
+
+**Answer.** Frequencies: `gold` 1 (daily data with no seasonal period declared), `woolyrnq` 4,
+`gas` 12. The outlier in `gold` is observation **770** (a price of about US$593.7) — a sudden
+spike far above its neighbours, most likely a data error.
+
+# Exercise 2 — `tute1.csv`
+
+*Read the file, convert it to a quarterly time series starting in 1981, and plot the three
+series with and without `facets = TRUE`.*
+
+### (a)–(c) Read, convert and plot {.tabset .tabset-pills}
+
+#### R
+
+```{r ex2}
+tute1 <- read.csv("../data/external/tute1.csv", header = TRUE)
+head(tute1)
+mytimeseries <- ts(tute1[, -1], start = 1981, frequency = 4)
+autoplot(mytimeseries, facets = TRUE)
+autoplot(mytimeseries)                       # without facets: one panel, shared y-axis
+```
+
+#### Python
+
+```{python ex2-py}
+tute1 = pd.read_csv("../data/external/tute1.csv", index_col=0)
+print(tute1.head())
+mytimeseries = tute1.copy()
+mytimeseries.index = pd.period_range("1981Q1", periods=len(tute1), freq="Q")
+mytimeseries.attrs["frequency"] = 4
+p_ = fpp.autoplot(mytimeseries, facets=True)
+plt.show()
+p_ = fpp.autoplot(mytimeseries)               # one panel
+plt.show()
+```
+
+**Answer.** With `facets = TRUE` each series gets its own panel and y-axis, so the seasonal
+patterns of all three are visible. Without it, all three share one axis: `Sales` (~1000) sits
+far above `AdBudget` (~600) and `GDP` (~280), and the smaller series look flat. Sales and
+AdBudget move together seasonally; GDP moves roughly in the opposite direction.
+
+# Exercise 3 — Australian retail data
+
+*Read `retail.xlsx` (two header rows → `skip = 1`), choose one series as a monthly `ts` starting
+April 1982, and explore it with `autoplot`, `ggseasonplot`, `ggsubseriesplot`, `gglagplot` and
+`ggAcf`.*
+
+I use the book's example column `A3349873A`; change `retail_col` to explore another series.
+
+### Read and select a series {.tabset .tabset-pills}
+
+#### R
+
+```{r ex3-read, eval = has_retail}
+retaildata <- readxl::read_excel(retail_file, skip = 1)
+retail_col <- "A3349873A"
+myts <- ts(retaildata[, retail_col], frequency = 12, start = c(1982, 4))
+```
+
+#### Python
+
+```{python ex3-read-py}
+retail_col = "A3349873A"
+if HAS_RETAIL:
+    retaildata = pd.read_excel(RETAIL_FILE, skiprows=1)
+    myts = fpp.make_ts(retaildata[retail_col].to_numpy(), start=(1982, 4), frequency=12, name=retail_col)
+else:
+    print("retail.xlsx not available - download it into data/external/ to run this exercise")
+```
+
+### Explore it {.tabset .tabset-pills}
+
+#### R
+
+```{r ex3-explore, eval = has_retail, fig.height = 4}
+autoplot(myts) + ggtitle(paste("Retail series", retail_col))
+ggseasonplot(myts, year.labels = TRUE)
+ggsubseriesplot(myts)
+gglagplot(myts, lags = 12)
+ggAcf(myts, lag.max = 48)
+```
+
+#### Python
+
+```{python ex3-explore-py}
+if HAS_RETAIL:
+    p_ = fpp.autoplot(myts, title=f"Retail series {retail_col}")
+    plt.show()
+    p_ = fpp.seasonplot(myts)
+    plt.show()
+    p_ = fpp.subseriesplot(myts)
+    plt.show()
+    p_ = fpp.lagplot(myts, lags=12, ncols=4)
+    plt.show()
+    p_ = fpp.acf_plot(myts, lag_max=48)
+    plt.show()
+```
+
+**Answer (for A3349873A).** There is a strong upward **trend**, clear annual **seasonality**
+with a December peak (Christmas trading) and a February trough, and the seasonal swings grow
+as the level grows (a transformation will help — Chapter 3). There is no strong cycle,
+though growth slows for short periods (e.g. around the early-1990s recession and 2008).
+The lag plots are strongest at lag 12 and the ACF decays slowly with peaks at lags 12, 24, 36 —
+the signature of trend plus seasonality.
+
+# Exercise 4 — Time plots of ten series
+
+*Plot `bicoal`, `chicken`, `dole`, `usdeaths`, `lynx`, `goog`, `writing`, `fancy`, `a10`, `h02`;
+for `goog` customise the axis labels and title.*
+
+### Ten time plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex4, fig.height = 9}
+series <- list(bicoal = bicoal, chicken = chicken, dole = dole, usdeaths = usdeaths,
+               lynx = lynx, writing = writing, fancy = fancy, a10 = a10, h02 = h02)
+plots <- lapply(names(series), function(n) autoplot(series[[n]]) + ggtitle(n) + xlab("") + ylab(""))
+gridExtra::grid.arrange(grobs = plots, ncol = 3)
+autoplot(goog) + ggtitle("Google Inc. daily closing stock price") +
+  xlab("Trading day (from 25 Feb 2013)") + ylab("Closing price (US$)")
+```
+
+#### Python
+
+```{python ex4-py}
+names = ["bicoal", "chicken", "dole", "usdeaths", "lynx", "writing", "fancy", "a10", "h02"]
+
+def nine_plots():
+    fig, axes = plt.subplots(3, 3, figsize=(11, 8))
+    for a, n in zip(axes.ravel(), names):
+        fpp.autoplot(fpp.load(n), ax=a, title=n, xlab="")
+    fig.tight_layout()
+
+nine_plots()
+plt.show()
+p_ = fpp.autoplot(fpp.load("goog"), title="Google Inc. daily closing stock price",
+                 xlab="Trading day (from 25 Feb 2013)", ylab="Closing price (US$)")
+plt.show()
+```
+
+**What the data are** (`help()`): `bicoal` annual US bituminous coal production (1920–68);
+`chicken` annual US chicken price (1924–93); `dole` monthly Australian unemployment benefit
+recipients; `usdeaths` monthly US accidental deaths (1973–78); `lynx` annual Canadian lynx
+trappings (1821–1934); `goog` 1000 daily Google closing prices; `writing` monthly US paper sales
+(France data: printing & writing paper); `fancy` monthly sales of a Queensland souvenir shop;
+`a10` monthly antidiabetic drug sales; `h02` monthly corticosteroid drug sales.
+
+# Exercise 5 — Seasonal patterns of `writing`, `fancy`, `a10`, `h02`
+
+### Seasonal and subseries plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex5, fig.height = 4}
+for (n in c("writing", "fancy", "a10", "h02")) {
+  x <- get(n)
+  print(ggseasonplot(x) + ggtitle(paste("Seasonal plot:", n)))
+  print(ggsubseriesplot(x) + ggtitle(paste("Subseries plot:", n)))
+}
+```
+
+#### Python
+
+```{python ex5-py}
+for n in ["writing", "fancy", "a10", "h02"]:
+    x = fpp.load(n)
+    p_ = fpp.seasonplot(x, title=f"Seasonal plot: {n}")
+    plt.show()
+    p_ = fpp.subseriesplot(x, title=f"Subseries plot: {n}")
+    plt.show()
+```
+
+**Answer.**
+
+* `writing` — sales collapse every **August** (summer holidays in France) and are otherwise
+  fairly flat; the pattern is very stable across years.
+* `fancy` — strong **December** peak (Christmas/tourist season) and a smaller March peak
+  (a local surfing festival from 1988); sales and the size of the peaks grow quickly, with 1993
+  much higher than earlier years. 1987 lacks the March bump.
+* `a10` — low in **February**, rising through the year to a **January** peak (stockpiling before
+  the subsidy resets); seasonal swings grow over time. 2008 is unusual (incomplete year,
+  lower values).
+* `h02` — mirror image: low in **February**, high in **December/January**; the gap between low
+  and high months grows over time; 2008 again is incomplete.
+
+# Exercise 6 — `hsales`, `usdeaths`, `bricksq`, `sunspotarea`, `gasoline`
+
+*Use all five graphics functions; describe seasonality, cyclicity and trend.*
+
+### All graphics for each series {.tabset .tabset-pills}
+
+#### R
+
+```{r ex6, fig.height = 3.6}
+for (n in c("hsales", "usdeaths", "bricksq", "sunspotarea", "gasoline")) {
+  x <- get(n)
+  print(autoplot(x) + ggtitle(n))
+  if (frequency(x) > 1 && frequency(x) <= 12) {
+    print(ggseasonplot(x) + ggtitle(paste("Seasonal plot:", n)))
+    print(ggsubseriesplot(x) + ggtitle(paste("Subseries plot:", n)))
+  }
+  if (n == "gasoline") print(ggseasonplot(x) + ggtitle("Seasonal plot: gasoline (weekly)"))
+  print(gglagplot(x, lags = 9) + ggtitle(paste("Lag plot:", n)))
+  print(ggAcf(x) + ggtitle(paste("ACF:", n)))
+}
+```
+
+#### Python
+
+```{python ex6-py}
+for n in ["hsales", "usdeaths", "bricksq", "sunspotarea", "gasoline"]:
+    x = fpp.load(n)
+    m = fpp.frequency(x)
+    p_ = fpp.autoplot(x, title=n)
+    plt.show()
+    if 1 < m <= 12:
+        p_ = fpp.seasonplot(x, title=f"Seasonal plot: {n}")
+        plt.show()
+        p_ = fpp.subseriesplot(x, title=f"Subseries plot: {n}")
+        plt.show()
+    p_ = fpp.lagplot(x, lags=9, color_by_season=(m <= 12))
+    plt.show()
+    p_ = fpp.acf_plot(x, title=f"ACF: {n}")
+    plt.show()
+```
+
+*(`sunspotarea` is annual and `gasoline` weekly (period 52.18), so subseries plots only make sense
+for the monthly and quarterly series. R draws a weekly seasonal plot for `gasoline`.)*
+
+**Answer.**
+
+| Series | Trend | Seasonality | Cycle | Notes |
+|---|---|---|---|---|
+| `hsales` | none overall | strong: peak in Mar–Apr, low in Nov–Dec | yes, 6–10-year housing cycle | ACF peaks at lags 12, 24 |
+| `usdeaths` | slight fall then rise | strong: peak in July, low in February | no | lag-12 plot almost on the diagonal |
+| `bricksq` | up to ~1980 then flat/down | Q1 low, Q2–Q3 high | yes, recessions (1975, 1983, 1991) visible as drops | ACF decays slowly (trend) |
+| `sunspotarea` | none | none (annual) | strong ~11-year solar cycle | ACF oscillates with period ≈ 11 |
+| `gasoline` | rising to 2007, then flat/slightly down | annual pattern (summer high) | no | weekly data: period 52.18, noisy |
+
+# Exercise 7 — `arrivals`: Japan, NZ, UK, US
+
+### Compare the four countries {.tabset .tabset-pills}
+
+#### R
+
+```{r ex7, fig.height = 4}
+autoplot(arrivals, facets = TRUE) + ggtitle("International arrivals to Australia (thousands)")
+for (cc in colnames(arrivals)) {
+  print(ggseasonplot(arrivals[, cc]) + ggtitle(paste("Seasonal plot:", cc)))
+  print(ggsubseriesplot(arrivals[, cc]) + ggtitle(paste("Subseries plot:", cc)))
+}
+```
+
+#### Python
+
+```{python ex7-py}
+arr = fpp.load("arrivals")
+p_ = fpp.autoplot(arr, facets=True, title="International arrivals to Australia (thousands)")
+plt.show()
+for cc in arr.columns:
+    x = arr[cc]; x.attrs = dict(arr.attrs)
+    p_ = fpp.seasonplot(x, title=f"Seasonal plot: {cc}")
+    plt.show()
+    p_ = fpp.subseriesplot(x, title=f"Subseries plot: {cc}")
+    plt.show()
+```
+
+**Answer.**
+
+* **Japan** — rose rapidly until the late 1990s, then declined; Q2 is the low quarter.
+* **NZ** — steady growth; Q3 (southern winter / school holidays) is highest, Q1 lowest.
+* **UK** — growth until ~2005 then decline; very strong Q4/Q1 peak (northern winter holidays),
+  Q2–Q3 low — the largest seasonal swing.
+* **US** — slow growth with a dip after 2001 and around the 2000 Sydney Olympics a spike; Q1/Q4 high.
+* Unusual observations: the 2000 Olympic spike (US, UK), the 1991 Gulf-war dip, the Japanese
+  decline after the Asian financial crisis (1997–98), and the SARS dip in 2003.
+
+# Exercise 8 — Match time plots to ACF plots
+
+*Time plots: (1) daily temperature of a cow, (2) monthly accidental deaths,
+(3) monthly air passengers, (4) annual mink trappings. Match each to an ACF.*
+
+### Reproduce the four time plots and their ACFs {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8, fig.height = 6, fig.width = 13}
+sets <- list("1. Daily temperature of cow" = cowtemp, "2. Monthly accidental deaths" = usdeaths,
+             "3. Monthly air passengers" = AirPassengers, "4. Annual mink trappings" = mink)
+tp <- lapply(names(sets), function(n) autoplot(sets[[n]]) + ggtitle(n) + xlab("") + ylab(""))
+ac <- lapply(names(sets), function(n) ggAcf(sets[[n]]) + ggtitle(paste("ACF of", substr(n, 1, 1))))
+gridExtra::grid.arrange(grobs = c(tp, ac), ncol = 4)
+```
+
+#### Python
+
+```{python ex8-py}
+sets = {"1. Daily temperature of cow": "cowtemp", "2. Monthly accidental deaths": "usdeaths",
+        "3. Monthly air passengers": "AirPassengers", "4. Annual mink trappings": "mink"}
+
+def eight_panels():
+    fig, axes = plt.subplots(2, 4, figsize=(13, 6))
+    for k, (title, name) in enumerate(sets.items()):
+        x = fpp.load(name)
+        fpp.autoplot(x, ax=axes[0, k], title=title, xlab="")
+        fpp.acf_plot(x, ax=axes[1, k], title=f"ACF of {title[0]}")
+    fig.tight_layout()
+
+eight_panels()
+plt.show()
+```
+
+**Answer.** Using the shapes of the ACFs:
+
+* **Cow temperature (1)** — no trend or seasonality; positive but quickly decaying
+  autocorrelation → the ACF with a few positive spikes that die out (book's **B**).
+* **Accidental deaths (2)** — strong seasonality, no trend → ACF that oscillates with a period of
+  12 (positive at 12, negative at 6) (book's **A**).
+* **Air passengers (3)** — trend + seasonality → large, slowly decaying ACF with small peaks
+  at 12, 24 (book's **D**).
+* **Mink (4)** — a ~10-year cycle in annual data → ACF that oscillates with period ≈ 10
+  (book's **C**).
+
+# Exercise 9 — `pigs` from 1990 vs. white noise
+
+### Time plot and ACF {.tabset .tabset-pills}
+
+#### R
+
+```{r ex9}
+mypigs <- window(pigs, start = 1990)
+autoplot(mypigs) + ggtitle("Pigs slaughtered in Victoria, 1990-1995")
+ggAcf(mypigs)
+c(bound = 2 / sqrt(length(mypigs)))
+Box.test(mypigs, lag = 24, type = "Ljung-Box")
+```
+
+#### Python
+
+```{python ex9-py}
+from statsmodels.stats.diagnostic import acorr_ljungbox
+mypigs = fpp.window(fpp.load("pigs"), start=1990)
+p_ = fpp.autoplot(mypigs, title="Pigs slaughtered in Victoria, 1990-1995")
+plt.show()
+p_ = fpp.acf_plot(mypigs)
+plt.show()
+print("bound:", 2 / np.sqrt(len(mypigs)))
+print(acorr_ljungbox(mypigs.to_numpy(), lags=[24]))
+```
+
+**Answer.** Unlike the white-noise example (Figures 2.17–2.18), several autocorrelations of
+`mypigs` (lags 1, 2, 3 and around 12) lie outside $\pm 2/\sqrt{T} \approx \pm 0.24$, and the
+Ljung-Box test rejects white noise. There is some short-term persistence and a weak
+seasonal pattern, so `mypigs` is **not** white noise.
+
+# Exercise 10 — Daily changes of the Dow Jones index
+
+### Differences and their ACF {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10}
+ddj <- diff(dj)
+autoplot(ddj) + ggtitle("Daily change in the Dow Jones index")
+ggAcf(ddj)
+Box.test(ddj, lag = 10, type = "Ljung-Box")
+```
+
+#### Python
+
+```{python ex10-py}
+dj = fpp.load("dj")
+ddj = fpp.make_ts(np.diff(dj.to_numpy()), start=2)
+p_ = fpp.autoplot(ddj, title="Daily change in the Dow Jones index")
+plt.show()
+p_ = fpp.acf_plot(ddj)
+plt.show()
+print(acorr_ljungbox(ddj.to_numpy(), lags=[10]))
+```
+
+**Answer.** The daily changes fluctuate around zero with no pattern, and only about one ACF
+spike (out of 20+) crosses the $\pm 2/\sqrt{291} \approx \pm 0.12$ bounds — the 5% we expect by
+chance. The Ljung-Box p-value is large, so the daily changes **look like white noise**: the Dow
+Jones index behaves like a random walk.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*

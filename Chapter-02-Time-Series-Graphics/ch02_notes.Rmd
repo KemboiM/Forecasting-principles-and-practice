@@ -1,0 +1,617 @@
+---
+title: "Chapter 2 — Time series graphics"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+pd.set_option("display.width", 160, "display.max_columns", 20)
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 2** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and exercises are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+
+# Learning goals
+
+* Store data as a **time series object** with the right **frequency**.
+* Read the main time series graphics: **time plots, seasonal plots, subseries plots,
+  scatterplots, scatterplot matrices, lag plots** and the **ACF**.
+* Recognise **trend**, **seasonality** and **cycles**, and know how they differ.
+* Recognise **white noise** — a series with nothing left to forecast.
+
+The first step of any data analysis is to **plot the data**: graphs reveal patterns, unusual
+observations, changes over time and relationships between variables, and these features
+decide which forecasting method is suitable.
+
+# 2.1 `ts` objects
+
+A time series is a list of numbers together with the times at which they were recorded.
+In R this is a `ts` object: the values plus a `start` time and a `frequency`
+(the number of observations before the seasonal pattern repeats).
+In Python I use a `pandas.Series` whose index is the time (`fpp.make_ts()` mimics `ts()`).
+
+### Creating time series {.tabset .tabset-pills}
+
+#### R
+
+```{r ts-objects}
+y <- ts(c(123, 39, 78, 52, 110), start = 2012)        # annual
+y
+set.seed(1)
+z <- round(rnorm(24, 100, 10))
+ym <- ts(z, start = 2003, frequency = 12)             # monthly: frequency = 12
+ym
+frequency(ym)
+```
+
+#### Python
+
+```{python ts-objects-py}
+y = fpp.make_ts([123, 39, 78, 52, 110], start=2012)   # annual
+print(y)
+z = np.round(np.random.default_rng(1).normal(100, 10, 24))
+ym = fpp.make_ts(z, start=2003, frequency=12)         # monthly
+print(ym.head(14))
+print("frequency:", fpp.frequency(ym))
+```
+
+### Frequency of a time series
+
+The `frequency` is the number of observations per **seasonal period** — in R it is the
+opposite of what many people expect (it is *observations per cycle*, not time between them).
+
+| Data | frequency |
+|---|---|
+| Annual | 1 |
+| Quarterly | 4 |
+| Monthly | 12 |
+| Weekly | 52 (more precisely 365.25/7 ≈ 52.18) |
+
+With more than one seasonal pattern (e.g. daily data with weekly *and* annual seasonality,
+or half-hourly data with daily, weekly and annual seasonality) the frequency depends on which
+pattern matters most: daily data → 7 (weekly) or 365.25 (annual); hourly → 24, 168 or 8766;
+half-hourly → 48, 336 or 17532. Chapter 11 handles several seasonalities at once.
+
+# 2.2 Time plots
+
+The obvious first graph: observations against time, joined by lines.
+
+### Weekly economy-class passengers (Figure 2.1) {.tabset .tabset-pills}
+
+The plot shows the 1989 industrial dispute (zero passengers), a 1992 period when economy
+seats were partly replaced by business seats, a big rise in late 1991, dips at the start
+of each year (holidays), long-term fluctuation, and missing values.
+
+#### R
+
+```{r melsyd-plot}
+autoplot(melsyd[, "Economy.Class"]) +
+  ggtitle("Economy class passengers: Melbourne-Sydney") +
+  xlab("Year") + ylab("Thousands")
+```
+
+#### Python
+
+```{python melsyd-plot-py}
+melsyd = fpp.load("melsyd")
+econ = melsyd["Economy.Class"]; econ.attrs = dict(melsyd.attrs)
+p_ = fpp.autoplot(econ, title="Economy class passengers: Melbourne-Sydney", xlab="Year", ylab="Thousands")
+plt.show()
+```
+
+### Antidiabetic drug sales (Figure 2.2) {.tabset .tabset-pills}
+
+Clear increasing trend plus a seasonal pattern that grows with the level of the series.
+The January drop is due to a government subsidy scheme that makes patients stockpile
+in December. A forecast must capture the seasonality and the slowly changing trend.
+
+#### R
+
+```{r a10-plot}
+autoplot(a10) + ggtitle("Antidiabetic drug sales") + ylab("$ million") + xlab("Year")
+```
+
+#### Python
+
+```{python a10-plot-py}
+a10 = fpp.load("a10")
+p_ = fpp.autoplot(a10, title="Antidiabetic drug sales", xlab="Year", ylab="$ million")
+plt.show()
+```
+
+# 2.3 Time series patterns
+
+* **Trend** — a long-term increase or decrease (not necessarily linear); it can "change direction".
+* **Seasonal** — a pattern caused by calendar factors (time of year, day of week);
+  always of a **fixed and known** period.
+* **Cyclic** — rises and falls that are **not** of a fixed frequency, usually linked to the
+  business cycle and lasting at least 2 years.
+
+How to tell seasonal from cyclic: fixed calendar-linked period → seasonal; irregular period →
+cyclic. Cycles are usually longer and their size more variable than seasonal patterns.
+Identify the patterns first, then choose a method that can capture them.
+
+### Four series with different patterns (Figure 2.3) {.tabset .tabset-pills}
+
+* `hsales` (US new houses) — strong seasonality plus a 6–10-year cycle, no trend.
+* `ustreas` (US treasury bill contracts, 100 days) — downward trend, no seasonality
+  (over a longer span the "trend" might be part of a cycle).
+* `qauselec` (Australian quarterly electricity production) — strong trend and seasonality, no cycle.
+* daily change in the Google price — no trend, seasonality or cycle: just random fluctuation.
+
+#### R
+
+```{r patterns}
+p1 <- autoplot(hsales) + xlab("Year") + ylab("Monthly housing sales (millions)") +
+  ggtitle("Sales of new one-family houses, USA")
+p2 <- autoplot(ustreas) + xlab("Day") + ylab("Number") + ggtitle("US treasury bill contracts")
+p3 <- autoplot(qauselec) + xlab("Year") + ylab("billion kWh") +
+  ggtitle("Australian quarterly electricity production")
+p4 <- autoplot(diff(goog)) + xlab("Day") + ylab("Change in price") +
+  ggtitle("Google daily changes in closing stock price")
+gridExtra::grid.arrange(p1, p2, p3, p4, ncol = 2)
+```
+
+#### Python
+
+```{python patterns-py}
+fig, ax = plt.subplots(2, 2, figsize=(10, 6.5))
+p_ = fpp.autoplot(fpp.load("hsales"), ax=ax[0, 0], title="Sales of new one-family houses, USA", xlab="Year")
+p_ = fpp.autoplot(fpp.load("ustreas"), ax=ax[0, 1], title="US treasury bill contracts", xlab="Day")
+p_ = fpp.autoplot(fpp.load("qauselec"), ax=ax[1, 0], title="Australian quarterly electricity production", xlab="Year")
+goog = fpp.load("goog")
+p_ = ax[1, 1].plot(np.arange(2, len(goog) + 1), np.diff(goog.to_numpy()))
+p_ = ax[1, 1].set(title="Google daily changes in closing stock price", xlabel="Day")
+plt.tight_layout(); plt.show()
+```
+
+# 2.4 Seasonal plots
+
+A **seasonal plot** draws each year as a separate line against the "seasons" (months,
+quarters). It makes the seasonal pattern and any **change** in it easy to see and helps spot
+years where the pattern broke.
+
+### Seasonal plot of antidiabetic drug sales (Figure 2.4) {.tabset .tabset-pills}
+
+The January fall is clear in every year, and so is the March 2008 dip (fewer sales than usual),
+the small number of days in February and the June 2008 shortfall.
+
+#### R
+
+```{r seasonplot}
+ggseasonplot(a10, year.labels = TRUE, year.labels.left = TRUE) +
+  ylab("$ million") + ggtitle("Seasonal plot: antidiabetic drug sales")
+```
+
+#### Python
+
+```{python seasonplot-py}
+p_ = fpp.seasonplot(a10, title="Seasonal plot: antidiabetic drug sales", ylab="$ million")
+plt.show()
+```
+
+### Polar seasonal plot (Figure 2.5) {.tabset .tabset-pills}
+
+The same data with the time axis wrapped around a circle.
+
+#### R
+
+```{r seasonplot-polar}
+ggseasonplot(a10, polar = TRUE) + ylab("$ million") +
+  ggtitle("Polar seasonal plot: antidiabetic drug sales")
+```
+
+#### Python
+
+```{python seasonplot-polar-py}
+fig = plt.figure(figsize=(6.5, 6.5))
+ax = fig.add_subplot(111, projection="polar")
+ax.set_theta_direction(-1); ax.set_theta_offset(np.pi / 2)   # clockwise from the top, like ggplot
+p_ = fpp.seasonplot(a10, polar=True, ax=ax, title="Polar seasonal plot: antidiabetic drug sales")
+plt.show()
+```
+
+# 2.5 Seasonal subseries plots
+
+The data for each season are collected into their own mini time plot; the horizontal line
+shows the **mean** for that season. This shows the underlying seasonal pattern clearly
+*and* how each season changes over time.
+
+### Subseries plot (Figure 2.6) {.tabset .tabset-pills}
+
+#### R
+
+```{r subseries}
+ggsubseriesplot(a10) + ylab("$ million") +
+  ggtitle("Seasonal subseries plot: antidiabetic drug sales")
+```
+
+#### Python
+
+```{python subseries-py}
+p_ = fpp.subseriesplot(a10, title="Seasonal subseries plot: antidiabetic drug sales", ylab="$ million")
+plt.show()
+```
+
+# 2.6 Scatterplots
+
+So far each plot showed one series. Scatterplots show **relationships between series**.
+
+### Half-hourly electricity demand and temperature (Figures 2.7 and 2.8) {.tabset .tabset-pills}
+
+Demand is high when temperatures are high (air conditioning) **and** when they are very low
+(heating) — a non-linear relationship.
+
+#### R
+
+```{r elecdemand}
+autoplot(elecdemand[, c("Demand", "Temperature")], facets = TRUE) +
+  xlab("Year: 2014") + ylab("") + ggtitle("Half-hourly electricity demand: Victoria, Australia")
+qplot(Temperature, Demand, data = as.data.frame(elecdemand)) +
+  ylab("Demand (GW)") + xlab("Temperature (Celsius)")
+```
+
+#### Python
+
+```{python elecdemand-py}
+ed = fpp.load("elecdemand")
+p_ = fpp.autoplot(ed[["Demand", "Temperature"]], facets=True, xlab="Year: 2014",
+                 title="Half-hourly electricity demand: Victoria, Australia")
+plt.show()
+fig, ax = plt.subplots(figsize=(7, 4.5))
+p_ = ax.scatter(ed["Temperature"], ed["Demand"], s=2, alpha=0.5)
+p_ = ax.set(xlabel="Temperature (Celsius)", ylabel="Demand (GW)")
+plt.show()
+```
+
+## Correlation
+
+The correlation coefficient
+$$r = \frac{\sum (x_t - \bar{x})(y_t - \bar{y})}{\sqrt{\sum (x_t - \bar{x})^2}\sqrt{\sum (y_t - \bar{y})^2}}$$
+lies between −1 and 1 and measures only the strength of the **linear** relationship.
+For the electricity data $r \approx 0.28$, even though the non-linear relationship is much stronger.
+
+### Correlation of demand and temperature, and examples of different r (Figure 2.9) {.tabset .tabset-pills}
+
+#### R
+
+```{r correlation}
+cor(elecdemand[, "Temperature"], elecdemand[, "Demand"])
+set.seed(2)
+rs <- c(-0.99, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 0.99)
+sim <- do.call(rbind, lapply(rs, function(r) {
+  x <- rnorm(100); y <- r * x + sqrt(1 - r^2) * rnorm(100)
+  data.frame(x, y, panel = sprintf("Correlation = %.2f", cor(x, y)))
+}))
+sim$panel <- factor(sim$panel, levels = unique(sim$panel))   # keep the order of rs
+ggplot(sim, aes(x, y)) + geom_point(size = 0.8) + facet_wrap(~panel, ncol = 3) +
+  theme(axis.text = element_blank())
+```
+
+#### Python
+
+```{python correlation-py}
+print(np.corrcoef(ed["Temperature"], ed["Demand"])[0, 1])
+rng = np.random.default_rng(2)
+fig, axes = plt.subplots(3, 3, figsize=(8, 7))
+for a, r in zip(axes.ravel(), [-0.99, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 0.99]):
+    x = rng.normal(size=100); yy = r * x + np.sqrt(1 - r**2) * rng.normal(size=100)
+    p_ = a.scatter(x, yy, s=5)
+    p_ = a.set(xticks=[], yticks=[], title=f"Correlation = {np.corrcoef(x, yy)[0, 1]:.2f}")
+plt.tight_layout(); plt.show()
+```
+
+### Anscombe's quartet — same r, very different relationships (Figure 2.10) {.tabset .tabset-pills}
+
+All four panels have $r = 0.82$. Always **look** at the data; never rely on correlation alone.
+
+#### R
+
+```{r anscombe}
+an <- do.call(rbind, lapply(1:4, function(i)
+  data.frame(x = anscombe[[paste0("x", i)]], y = anscombe[[paste0("y", i)]], set = paste("Set", i))))
+sapply(1:4, function(i) round(cor(anscombe[[paste0("x", i)]], anscombe[[paste0("y", i)]]), 3))
+ggplot(an, aes(x, y)) + geom_point() + facet_wrap(~set, ncol = 4)
+```
+
+#### Python
+
+```{python anscombe-py}
+# Anscombe (1973) quartet (same values as R's datasets::anscombe)
+x123 = [10, 8, 13, 9, 11, 14, 6, 4, 12, 7, 5]
+x4 = [8, 8, 8, 8, 8, 8, 8, 19, 8, 8, 8]
+ys = [[8.04, 6.95, 7.58, 8.81, 8.33, 9.96, 7.24, 4.26, 10.84, 4.82, 5.68],
+      [9.14, 8.14, 8.74, 8.77, 9.26, 8.10, 6.13, 3.10, 9.13, 7.26, 4.74],
+      [7.46, 6.77, 12.74, 7.11, 7.81, 8.84, 6.08, 5.39, 8.15, 6.42, 5.73],
+      [6.58, 5.76, 7.71, 8.84, 8.47, 7.04, 5.25, 12.50, 5.56, 7.91, 6.89]]
+fig, axes = plt.subplots(1, 4, figsize=(11, 3), sharey=True)
+for i, a in enumerate(axes):
+    xs = x4 if i == 3 else x123
+    p_ = a.scatter(xs, ys[i])
+    p_ = a.set_title(f"Set {i + 1}: r = {np.corrcoef(xs, ys[i])[0, 1]:.3f}")
+plt.tight_layout(); plt.show()
+```
+
+## Scatterplot matrices
+
+With several candidate variables, plot every pair. Row = vertical-axis variable,
+column = horizontal-axis variable; the upper panels show correlations.
+
+### Quarterly visitor nights for five NSW regions (Figures 2.11 and 2.12) {.tabset .tabset-pills}
+
+Strong positive relationships between the north- and south-coast regions; the
+inland/metro regions relate more weakly. Unusual points (e.g. a 2004 Metro outlier) stand out.
+
+#### R
+
+```{r visnights}
+autoplot(visnights[, 1:5], facets = TRUE) +
+  ylab("Number of visitor nights each quarter (millions)")
+GGally::ggpairs(as.data.frame(visnights[, 1:5]))
+```
+
+#### Python
+
+```{python visnights-py}
+from scipy.stats import gaussian_kde
+vis = fpp.load("visnights")
+p_ = fpp.autoplot(vis.iloc[:, :5], facets=True, xlab="Year")
+plt.show()
+
+def scatter_matrix(df):
+    """GGally::ggpairs-style matrix: scatter (lower), density (diagonal), correlation (upper)."""
+    k = df.shape[1]
+    fig, axes = plt.subplots(k, k, figsize=(9, 9))
+    for i in range(k):
+        for j in range(k):
+            a = axes[i, j]
+            x, y = df.iloc[:, j].to_numpy(), df.iloc[:, i].to_numpy()
+            if i > j:
+                a.scatter(x, y, s=8)
+            elif i == j:
+                grid = np.linspace(x.min(), x.max(), 200)
+                a.plot(grid, gaussian_kde(x)(grid))
+            else:
+                a.text(0.5, 0.5, f"Corr:\n{np.corrcoef(x, y)[0, 1]:.3f}", ha="center", va="center",
+                       transform=a.transAxes)
+                a.set_xticks([]); a.set_yticks([])
+            if i == 0: a.set_title(df.columns[j], fontsize=9)
+            if j == 0: a.set_ylabel(df.columns[i], fontsize=9)
+    fig.tight_layout()
+    return fig
+
+p_ = scatter_matrix(vis.iloc[:, :5])
+plt.show()
+```
+
+# 2.7 Lag plots
+
+Plot $y_t$ against $y_{t-k}$ for several lags $k$ (colours = quarters). For quarterly beer
+production the relationship is strongly **positive at lags 4 and 8** (seasonality: peaks
+line up with peaks) and **negative at lags 2 and 6** (peaks — Q4 — are plotted against
+troughs — Q2).
+
+### Lag plots of beer production (Figure 2.13) {.tabset .tabset-pills}
+
+#### R
+
+```{r lagplot, fig.height=7}
+beer2 <- window(ausbeer, start = 1992)
+gglagplot(beer2)
+```
+
+#### Python
+
+```{python lagplot-py}
+beer2 = fpp.window(fpp.load("ausbeer"), start=1992)
+p_ = fpp.lagplot(beer2, lags=9)
+plt.show()
+```
+
+`window()` extracts part of a series: here, everything from 1992 onwards.
+
+# 2.8 Autocorrelation
+
+Autocorrelation measures the **linear relationship between lagged values** of a series —
+one number per lag plot:
+$$r_k = \frac{\sum_{t=k+1}^{T}(y_t-\bar{y})(y_{t-k}-\bar{y})}{\sum_{t=1}^{T}(y_t-\bar{y})^2}.$$
+The set $r_1, r_2, \dots$ is the **autocorrelation function (ACF)**, plotted as a
+**correlogram**.
+
+### ACF values of beer production {.tabset .tabset-pills}
+
+#### R
+
+```{r acf-values}
+round(Acf(beer2, lag.max = 9, plot = FALSE)$acf[-1], 3)
+```
+
+#### Python
+
+```{python acf-values-py}
+from statsmodels.tsa.stattools import acf
+np.round(acf(beer2.to_numpy(), nlags=9, fft=False)[1:], 3)
+```
+
+### Correlogram (Figure 2.14) {.tabset .tabset-pills}
+
+* $r_4$ is the largest (seasonal: peaks 4 quarters apart),
+* $r_2$ is the most negative (troughs are 2 quarters after peaks),
+* the dashed blue lines show whether correlations differ significantly from zero (Section 2.9).
+
+#### R
+
+```{r ggacf-beer}
+ggAcf(beer2)
+```
+
+#### Python
+
+```{python ggacf-beer-py}
+p_ = fpp.acf_plot(beer2, title="Series: beer2")
+plt.show()
+```
+
+## Trend and seasonality in ACF plots
+
+* **Trend** → large positive autocorrelations at small lags that **decay slowly**.
+* **Seasonality** → larger autocorrelations at **seasonal lags** (multiples of the period).
+* Both → a slow decay with a "scalloped" shape.
+
+### Australian monthly electricity demand (Figures 2.15 and 2.16) {.tabset .tabset-pills}
+
+#### R
+
+```{r aelec}
+aelec <- window(elec, start = 1980)
+autoplot(aelec) + xlab("Year") + ylab("GWh")
+ggAcf(aelec, lag = 48)
+```
+
+#### Python
+
+```{python aelec-py}
+aelec = fpp.window(fpp.load("elec"), start=1980)
+p_ = fpp.autoplot(aelec, xlab="Year", ylab="GWh")
+plt.show()
+p_ = fpp.acf_plot(aelec, lag_max=48, title="Series: aelec")
+plt.show()
+```
+
+# 2.9 White noise
+
+A series with **no autocorrelation** is **white noise**. Its autocorrelations will not be
+exactly zero (random variation), but about 95% of them should lie within
+$\pm 2/\sqrt{T}$ — the blue dashed lines. One or more large spikes outside, or clearly more
+than 5% of spikes outside, suggests the series is **not** white noise.
+With $T = 50$ the bounds are $\pm 2/\sqrt{50} = \pm 0.28$.
+
+### A white noise series and its ACF (Figures 2.17 and 2.18) {.tabset .tabset-pills}
+
+*(Random numbers differ between R and Python; the conclusion does not.)*
+
+#### R
+
+```{r whitenoise}
+set.seed(30)
+y <- ts(rnorm(50))
+autoplot(y) + ggtitle("White noise")
+ggAcf(y)
+c(bound = 2 / sqrt(50), max_abs_acf = max(abs(Acf(y, plot = FALSE)$acf[-1])))
+```
+
+#### Python
+
+```{python whitenoise-py}
+wn = fpp.make_ts(np.random.default_rng(30).normal(size=50))
+p_ = fpp.autoplot(wn, title="White noise")
+plt.show()
+p_ = fpp.acf_plot(wn, title="Series: y")
+plt.show()
+r = acf(wn.to_numpy(), nlags=16, fft=False)[1:]
+print({"bound": round(2 / np.sqrt(50), 4), "max_abs_acf": round(float(np.abs(r).max()), 4)})
+```
+
+# Model testing — every model used in this chapter
+
+Chapter 2 is about graphics; the only *model* it introduces is **white noise** (the
+benchmark "nothing to forecast" model). I test it in two ways on every series the chapter
+discusses:
+
+1. **ACF bound check** — share of the first 20 autocorrelations outside $\pm 2/\sqrt{T}$
+   (≈ 5% or less expected for white noise).
+2. **Ljung-Box test** (formally introduced in Section 3.3) on lags up to 10 (non-seasonal) or
+   $2m$ (seasonal). A small p-value means "not white noise".
+
+### White-noise tests on the chapter's series {.tabset .tabset-pills}
+
+#### R
+
+```{r model-testing}
+wn_test <- function(x, name) {
+  x <- na.omit(x); n <- length(x); m <- frequency(x)
+  r <- Acf(x, lag.max = 20, plot = FALSE)$acf[-1]
+  lag <- if (m > 1) 2 * m else 10
+  lb <- Box.test(x, lag = lag, type = "Ljung-Box")
+  data.frame(series = name, T = n, pct_outside = round(100 * mean(abs(r) > 2 / sqrt(n)), 1),
+             LB_Q = round(unname(lb$statistic), 2), LB_lag = lag, p_value = signif(lb$p.value, 3),
+             white_noise = lb$p.value > 0.05)
+}
+results_r <- rbind(
+  wn_test(y, "simulated white noise"),
+  wn_test(beer2, "beer2"),
+  wn_test(aelec, "aelec"),
+  wn_test(a10, "a10"),
+  wn_test(diff(goog), "diff(goog)"),
+  wn_test(ustreas, "ustreas"))
+results_r
+```
+
+#### Python
+
+```{python model-testing-py}
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
+def wn_test(x, name):
+    v = pd.Series(np.asarray(x, dtype=float)).dropna().to_numpy()
+    n = len(v); m = int(round(fpp.frequency(x))) if hasattr(x, "attrs") else 1
+    r = acf(v, nlags=20, fft=False)[1:]
+    lag = 2 * m if m > 1 else 10
+    lb = acorr_ljungbox(v, lags=[lag], return_df=True)
+    p = float(lb["lb_pvalue"].iloc[0])
+    return dict(series=name, T=n, pct_outside=round(100 * np.mean(np.abs(r) > 2 / np.sqrt(n)), 1),
+                LB_Q=round(float(lb["lb_stat"].iloc[0]), 2), LB_lag=lag, p_value=float(f"{p:.3g}"),
+                white_noise=p > 0.05)
+
+dgoog = fpp.make_ts(np.diff(goog.to_numpy()), start=2)
+results_py = pd.DataFrame([
+    wn_test(wn, "simulated white noise"), wn_test(beer2, "beer2"), wn_test(aelec, "aelec"),
+    wn_test(a10, "a10"), wn_test(dgoog, "diff(goog)"), wn_test(fpp.load("ustreas"), "ustreas")])
+results_py
+```
+
+### What the test shows
+
+* Only the simulated white noise and the **daily changes of the Google price** pass as white
+  noise — the stock-price changes are essentially unpredictable (Section 2.3), which is why
+  the naïve method of Chapter 3 is hard to beat for stock prices.
+* Trending and seasonal series (`beer2`, `aelec`, `a10`, `ustreas`) fail decisively: their
+  autocorrelation is exactly the information a forecasting model should exploit.
+* **R vs Python:** for the real series the ACF values and Ljung-Box statistics agree exactly
+  (same formula). Only the simulated white noise differs, because the random-number
+  generators differ; both versions pass the test.
+
+# Key takeaways
+
+* Store data with the correct **frequency** (observations per seasonal cycle).
+* Always start with a **time plot**; then use seasonal, subseries, lag and ACF plots to
+  understand the patterns.
+* **Trend**, **seasonality** (fixed calendar period) and **cycles** (irregular, ≥ 2 years) are different things.
+* Correlation measures only *linear* association — look at the scatterplot.
+* **White noise**: ~95% of ACF spikes within $\pm 2/\sqrt{T}$; anything else has structure to forecast.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*
