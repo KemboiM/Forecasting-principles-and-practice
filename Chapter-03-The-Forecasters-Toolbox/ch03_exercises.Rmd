@@ -1,0 +1,609 @@
+---
+title: "Chapter 3 — Exercises"
+subtitle: "Section 3.7 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+retail_file <- "../data/external/retail.xlsx"
+if (!file.exists(retail_file)) {
+  try(download.file("https://otexts.com/fpp2/extrafiles/retail.xlsx", retail_file, mode = "wb", quiet = TRUE),
+      silent = TRUE)
+}
+has_retail <- file.exists(retail_file)
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+import fpp_ch03 as ch3
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+pd.set_option("display.width", 160, "display.max_columns", 20)
+
+RETAIL_FILE = "../data/external/retail.xlsx"
+if not os.path.exists(RETAIL_FILE):
+    try:
+        import urllib.request
+        urllib.request.urlretrieve("https://otexts.com/fpp2/extrafiles/retail.xlsx", RETAIL_FILE)
+    except Exception:
+        pass
+HAS_RETAIL = os.path.exists(RETAIL_FILE)
+```
+
+> **Acknowledgement.** Exercises from Section 3.7 of *Forecasting: Principles and Practice*
+> (2nd ed.) by **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>).
+> The questions are paraphrased; the answers are my own.
+
+*Exercises 3 and 8 use `retail.xlsx` (see Chapter 2, Exercise 3). It is downloaded into
+`data/external/` automatically; if that fails, save it there yourself. Those chunks are skipped
+when the file is missing. Default series: `A3349873A` — change `retail_col` to use your own.*
+
+# Exercise 1 — Box-Cox transformations to stabilise the variance
+
+*Find a suitable Box-Cox transformation for `usnetelec`, `usgdp`, `mcopper`, `enplanements`.*
+
+### Automatic λ and before/after plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex1, fig.height = 3.2}
+for (n in c("usnetelec", "usgdp", "mcopper", "enplanements")) {
+  x <- get(n); lam <- BoxCox.lambda(x)
+  gridExtra::grid.arrange(autoplot(x) + ggtitle(n),
+                          autoplot(BoxCox(x, lam)) + ggtitle(sprintf("%s, Box-Cox lambda = %.3f", n, lam)),
+                          ncol = 2)
+}
+sapply(list(usnetelec = usnetelec, usgdp = usgdp, mcopper = mcopper, enplanements = enplanements),
+       BoxCox.lambda)
+```
+
+#### Python
+
+```{python ex1-py}
+lams = {}
+for n in ["usnetelec", "usgdp", "mcopper", "enplanements"]:
+    x = fpp.load(n); lam = fpp.box_cox_lambda(x); lams[n] = round(lam, 4)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 3))
+    p_ = fpp.autoplot(x, ax=ax[0], title=n)
+    p_ = fpp.autoplot(fpp.box_cox(x, lam), ax=ax[1], title=f"{n}, Box-Cox lambda = {lam:.3f}")
+    plt.tight_layout(); plt.show()
+print(lams)
+```
+
+**Answer.**
+
+* `usnetelec` (annual US net electricity generation) — λ ≈ 0.52: roughly a **square root**; the
+  variation is fairly stable, so little transformation is needed (λ = 1 would also be defensible).
+* `usgdp` (quarterly US GDP) — λ ≈ 0.37: between log and square root; it straightens the
+  exponential-looking growth.
+* `mcopper` (monthly copper price) — λ ≈ 0.19: close to a **log**; the big price swings at high
+  levels (2006–07) are damped.
+* `enplanements` (monthly US airline passengers) — λ ≈ −0.23: close to a **log**; the seasonal
+  swings become even in size.
+
+Simple values (½ for `usnetelec`, 0/log for the others) are easier to explain and give almost
+the same result.
+
+# Exercise 2 — Why Box-Cox does not help for `cangas`
+
+### `cangas` and its transformation {.tabset .tabset-pills}
+
+#### R
+
+```{r ex2}
+lam <- BoxCox.lambda(cangas); lam
+gridExtra::grid.arrange(autoplot(cangas) + ggtitle("Canadian gas production"),
+                        autoplot(BoxCox(cangas, lam)) + ggtitle(sprintf("Box-Cox, lambda = %.2f", lam)),
+                        ncol = 2)
+```
+
+#### Python
+
+```{python ex2-py}
+cangas = fpp.load("cangas"); lam = fpp.box_cox_lambda(cangas); print(round(lam, 4))
+fig, ax = plt.subplots(1, 2, figsize=(10, 3.2))
+p_ = fpp.autoplot(cangas, ax=ax[0], title="Canadian gas production")
+p_ = fpp.autoplot(fpp.box_cox(cangas, lam), ax=ax[1], title=f"Box-Cox, lambda = {lam:.2f}")
+plt.tight_layout(); plt.show()
+```
+
+**Answer.** `BoxCox.lambda()` suggests λ ≈ 0.58, but it barely changes the picture. The seasonal variation in `cangas` is small at the start, **large in the middle**
+(roughly 1978–1990) and small again at the end, at levels that keep rising. A Box-Cox
+transformation can only shrink or expand the variation as a function of the *level*; it cannot
+make the variation small at low *and* high levels but large in between. The transformed series
+looks almost the same. (The changing seasonality needs a model with time-varying seasonality,
+e.g. STL in Chapter 6.)
+
+# Exercise 3 — Box-Cox for my retail series
+
+### λ for the retail series {.tabset .tabset-pills}
+
+#### R
+
+```{r ex3, eval = has_retail}
+retaildata <- readxl::read_excel(retail_file, skip = 1)
+retail_col <- "A3349873A"
+myts <- ts(retaildata[[retail_col]], frequency = 12, start = c(1982, 4))
+(lam_retail <- BoxCox.lambda(myts))
+gridExtra::grid.arrange(autoplot(myts) + ggtitle(retail_col),
+                        autoplot(BoxCox(myts, lam_retail)) + ggtitle(sprintf("Box-Cox, lambda = %.2f", lam_retail)),
+                        autoplot(log(myts)) + ggtitle("log"), ncol = 3)
+```
+
+#### Python
+
+```{python ex3-py}
+retail_col = "A3349873A"
+if HAS_RETAIL:
+    retaildata = pd.read_excel(RETAIL_FILE, skiprows=1)
+    myts = fpp.make_ts(retaildata[retail_col].to_numpy(), start=(1982, 4), frequency=12, name=retail_col)
+    lam_retail = fpp.box_cox_lambda(myts); print(round(lam_retail, 4))
+    fig, ax = plt.subplots(1, 3, figsize=(12, 3))
+    p_ = fpp.autoplot(myts, ax=ax[0], title=retail_col)
+    p_ = fpp.autoplot(fpp.box_cox(myts, lam_retail), ax=ax[1], title=f"Box-Cox, lambda = {lam_retail:.2f}")
+    p_ = fpp.autoplot(np.log(myts), ax=ax[2], title="log")
+    plt.tight_layout(); plt.show()
+```
+
+**Answer.** Retail series typically have seasonal swings that grow with the level, so the
+Guerrero λ is usually between 0 and 0.5. I would pick the value suggested by `BoxCox.lambda()`
+rounded to a simple value — usually the **log** (λ = 0), which also makes changes interpretable
+as percentages. (Re-run with your own column: the conclusion depends on the series.)
+
+# Exercise 4 — `dole`, `usdeaths`, `bricksq`: transform if appropriate
+
+### Plots and transformations {.tabset .tabset-pills}
+
+#### R
+
+```{r ex4, fig.height = 3.2}
+lams <- sapply(list(dole = dole, usdeaths = usdeaths, bricksq = bricksq), BoxCox.lambda); lams
+gridExtra::grid.arrange(autoplot(dole) + ggtitle("dole"),
+                        autoplot(BoxCox(dole, lams["dole"])) + ggtitle(sprintf("dole, lambda = %.2f", lams["dole"])), ncol = 2)
+gridExtra::grid.arrange(autoplot(usdeaths) + ggtitle("usdeaths"),
+                        autoplot(BoxCox(usdeaths, lams["usdeaths"])) + ggtitle(sprintf("usdeaths, lambda = %.2f", lams["usdeaths"])), ncol = 2)
+gridExtra::grid.arrange(autoplot(bricksq) + ggtitle("bricksq"),
+                        autoplot(BoxCox(bricksq, lams["bricksq"])) + ggtitle(sprintf("bricksq, lambda = %.2f", lams["bricksq"])), ncol = 2)
+```
+
+#### Python
+
+```{python ex4-py}
+lams = {}
+for n in ["dole", "usdeaths", "bricksq"]:
+    x = fpp.load(n); lam = fpp.box_cox_lambda(x); lams[n] = round(lam, 4)
+    fig, ax = plt.subplots(1, 2, figsize=(10, 3))
+    p_ = fpp.autoplot(x, ax=ax[0], title=n)
+    p_ = fpp.autoplot(fpp.box_cox(x, lam), ax=ax[1], title=f"{n}, lambda = {lam:.2f}")
+    plt.tight_layout(); plt.show()
+print(lams)
+```
+
+**Answer.**
+
+* `dole` (monthly unemployment benefit recipients) — the level rises enormously and the
+  variation grows with it; λ ≈ 0.33 (or a log) makes the variation much more even. **Transform.**
+* `usdeaths` — stable seasonal swings and no change in variability with the level. Guerrero's
+  method suggests λ ≈ −0.03 (≈ log), but the transformed and original plots look the same because
+  the level hardly changes. **No transformation needed.**
+* `bricksq` — mild increase in variation with the level up to 1980; λ ≈ 0.25 helps a little.
+  A log transformation is a reasonable, simple choice; the gain is modest.
+
+# Exercise 5 — Seasonal naïve residuals for beer production from 1992
+
+### Residual checks {.tabset .tabset-pills}
+
+#### R
+
+```{r ex5}
+beer <- window(ausbeer, start = 1992)
+fc <- snaive(beer)
+autoplot(fc)
+res <- residuals(fc)
+autoplot(res)
+checkresiduals(fc)
+```
+
+#### Python
+
+```{python ex5-py}
+beer = fpp.window(fpp.load("ausbeer"), start=1992)
+fc = fpp.snaive(beer)
+p_ = fpp.plot_forecast(fc)
+plt.show()
+p_ = fpp.autoplot(fc.residuals, title="Residuals")
+plt.show()
+lb = fpp.checkresiduals(fc)
+```
+
+**Answer.** The residuals have a mean slightly below zero (beer production was declining
+slowly, so last year's value tends to over-forecast), and the Ljung-Box test is significant
+(p ≈ 0.0001): there is autocorrelation, especially at lag 4, left in the residuals. The histogram
+is roughly normal. Conclusion: the seasonal naïve method leaves information unused — a better
+model could improve the forecasts (and the prediction intervals may be unreliable).
+
+# Exercise 6 — `WWWusage` and `bricksq`
+
+*Use `naive()` for the non-seasonal `WWWusage` and `snaive()` for the quarterly `bricksq`.*
+
+### Residual checks {.tabset .tabset-pills}
+
+#### R
+
+```{r ex6}
+fc_www <- naive(WWWusage)
+autoplot(fc_www)
+checkresiduals(fc_www)
+fc_bricks <- snaive(bricksq)
+autoplot(fc_bricks)
+checkresiduals(fc_bricks)
+```
+
+#### Python
+
+```{python ex6-py}
+www = ch3.load_extra("WWWusage")         # base-R dataset, stored in data/WWWusage.csv
+fc_www = fpp.naive(www)
+p_ = fpp.plot_forecast(fc_www)
+plt.show()
+lb1 = fpp.checkresiduals(fc_www)
+bricksq = fpp.load("bricksq")
+fc_bricks = fpp.snaive(bricksq)
+p_ = fpp.plot_forecast(fc_bricks)
+plt.show()
+lb2 = fpp.checkresiduals(fc_bricks)
+```
+
+**Answer.**
+
+* `WWWusage` (users connected to a server, per minute) — the naïve residuals are strongly
+  autocorrelated (large ACF at lags 1–3; Ljung-Box p ≈ 0): the series moves in smooth waves
+  so the change from one minute to the next is predictable. Naïve is not adequate (an ARIMA
+  model, Chapter 8, fits this well).
+* `bricksq` — the seasonal naïve residuals are highly autocorrelated (slowly decaying ACF) and
+  not white noise (p ≈ 0); the trend and cycles are not captured. The histogram is reasonably
+  normal but skewed by large negative errors during recessions.
+
+# Exercise 7 — True or false?
+
+*(Conceptual — no code needed.)*
+
+a. **False.** Normally distributed residuals are *convenient* (easy prediction intervals) but not
+   required; the essential properties are uncorrelated residuals with zero mean.
+b. **False.** Small residuals can come from **over-fitting**; residuals are in-sample one-step
+   errors and say little about genuine out-of-sample forecasts.
+c. **False.** No single measure is "best". MAPE is undefined/unstable near zero, needs a meaningful
+   zero, and penalises negative errors more; MASE or RMSE/MAE on a test set are often better, and
+   the choice depends on the purpose.
+d. **False.** More complexity often makes forecasts *worse* (over-fitting). First check the data,
+   transformations, residual diagnostics and simpler alternatives.
+e. **False (as a rule).** The test-set accuracy is important but one test set can be noisy; also
+   consider cross-validation, residual diagnostics, interpretability, cost and whether the method
+   is stable. Choosing purely on one test set can also over-fit the test set.
+
+# Exercise 8 — Train/test split for my retail series
+
+### (a)–(b) Split and check the split {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8a, eval = has_retail}
+myts.train <- window(myts, end = c(2010, 12))
+myts.test <- window(myts, start = 2011)
+autoplot(myts) +
+  autolayer(myts.train, series = "Training") +
+  autolayer(myts.test, series = "Test")
+```
+
+#### Python
+
+```{python ex8a-py}
+if HAS_RETAIL:
+    myts_train = fpp.window(myts, end=(2010, 12)); myts_test = fpp.window(myts, start=2011)
+    fig, ax = plt.subplots()
+    p_ = ax.plot(fpp.ts_time(myts_train), myts_train.to_numpy(), label="Training")
+    p_ = ax.plot(fpp.ts_time(myts_test), myts_test.to_numpy(), label="Test")
+    p_ = ax.legend()
+    plt.show()
+```
+
+### (c)–(e) Seasonal naïve forecasts, accuracy and residuals {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8c, eval = has_retail}
+fc <- snaive(myts.train)
+accuracy(fc, myts.test)
+checkresiduals(fc)
+```
+
+#### Python
+
+```{python ex8c-py}
+if HAS_RETAIL:
+    fc = fpp.snaive(myts_train)
+    print(fpp.accuracy(fc, myts_test).round(3))
+    lb = fpp.checkresiduals(fc)
+```
+
+### (f) Sensitivity to the split {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8f, eval = has_retail}
+ends <- 2006:2011
+t(sapply(ends, function(e) {
+  tr <- window(myts, end = c(e, 12)); te <- window(myts, start = e + 1, end = c(e + 2, 12))
+  c(train_end = e, accuracy(snaive(tr, h = length(te)), te)["Test set", c("RMSE", "MAPE", "MASE")])
+}))
+```
+
+#### Python
+
+```{python ex8f-py}
+if HAS_RETAIL:
+    rows = []
+    for e in range(2006, 2012):
+        tr = fpp.window(myts, end=(e, 12)); te = fpp.window(myts, start=e + 1, end=(e + 2, 12))
+        a = fpp.accuracy(fpp.snaive(tr, h=len(te)), te).loc["Test set", ["RMSE", "MAPE", "MASE"]]
+        rows.append({"train_end": e, **a.round(3).to_dict()})
+    print(pd.DataFrame(rows))
+```
+
+**Answer.** For a trending retail series the seasonal naïve residuals are positive on average
+(it forecasts last year's level when sales have grown) and strongly autocorrelated, so they are
+**not** white noise; the histogram is roughly normal but shifted. The accuracy measures change
+noticeably when the train/test split moves by a year or two — one split is a noisy estimate of
+accuracy, which is why time series cross-validation is preferable.
+
+# Exercise 9 — Visitor nights in Queensland Metro
+
+*(a) Three training sets omitting the last 1, 2, 3 years; (b) one-year snaive forecasts; (c) compare MAPE.*
+
+### MAPE for three training sets {.tabset .tabset-pills}
+
+#### R
+
+```{r ex9}
+qld <- visnights[, "QLDMetro"]
+train1 <- window(qld, end = c(2015, 4))
+train2 <- window(qld, end = c(2014, 4))
+train3 <- window(qld, end = c(2013, 4))
+fc1 <- snaive(train1, h = 4); fc2 <- snaive(train2, h = 4); fc3 <- snaive(train3, h = 4)
+rbind(fc1 = accuracy(fc1, window(qld, start = 2016, end = c(2016, 4)))["Test set", "MAPE"],
+      fc2 = accuracy(fc2, window(qld, start = 2015, end = c(2015, 4)))["Test set", "MAPE"],
+      fc3 = accuracy(fc3, window(qld, start = 2014, end = c(2014, 4)))["Test set", "MAPE"])
+```
+
+#### Python
+
+```{python ex9-py}
+vis = fpp.load("visnights")
+qld = vis["QLDMetro"]; qld.attrs = dict(vis.attrs)
+out = {}
+for k, end in zip([1, 2, 3], [2015, 2014, 2013]):
+    tr = fpp.window(qld, end=(end, 4)); te = fpp.window(qld, start=end + 1, end=(end + 1, 4))
+    out[f"fc{k}"] = round(float(fpp.accuracy(fpp.snaive(tr, h=4), te).loc["Test set", "MAPE"]), 4)
+print(out)
+```
+
+**Answer.** The three MAPEs (about 6.2% for 2016, 3.1% for 2015 and 8.5% for 2014) differ a lot:
+forecast accuracy measured on one year of data depends strongly on *which* year is held out.
+2015 was easiest to forecast with the previous year's values; 2014 hardest. Again, averaging over many
+origins (cross-validation) gives a more reliable picture.
+
+# Exercise 10 — Dow Jones index (`dowjones`)
+
+### (a)–(c) Time plot, drift forecasts and the first-to-last line {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10}
+autoplot(dowjones) + ggtitle("Dow Jones index") + xlab("Day")
+fc_drift <- rwf(dowjones, drift = TRUE, h = 20)
+n <- length(dowjones)
+slope <- (dowjones[n] - dowjones[1]) / (n - 1)
+line <- data.frame(x = c(1, n + 20), y = c(dowjones[1], dowjones[1] + slope * (n + 19)))
+autoplot(fc_drift) + geom_line(data = line, aes(x, y), colour = "red", linetype = "dashed")
+all.equal(as.numeric(fc_drift$mean), dowjones[n] + slope * (1:20))
+```
+
+#### Python
+
+```{python ex10-py}
+dow = fpp.load("dowjones")
+p_ = fpp.autoplot(dow, title="Dow Jones index", xlab="Day")
+plt.show()
+fc_drift = fpp.rwf(dow, drift=True, h=20)
+y = dow.to_numpy(); n = len(y)
+slope = (y[-1] - y[0]) / (n - 1)
+ax = fpp.plot_forecast(fc_drift)
+p_ = ax.plot([1, n + 20], [y[0], y[0] + slope * (n + 19)], "r--")
+plt.show()
+print(np.allclose(fc_drift.mean.to_numpy(), y[-1] + slope * np.arange(1, 21)))
+```
+
+**(c)** The drift forecasts are $y_T + h\,(y_T - y_1)/(T-1)$ — exactly the straight line through
+the first and the last observation, extended (the dashed red line passes through the forecasts;
+the check returns `TRUE`).
+
+### (d) Other benchmark methods {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10d}
+dj_tr <- window(dowjones, end = 68); dj_te <- window(dowjones, start = 69)
+fcs <- list(Mean = meanf(dj_tr, h = 10), Naive = naive(dj_tr, h = 10), Drift = rwf(dj_tr, drift = TRUE, h = 10))
+autoplot(dowjones) + autolayer(fcs$Mean, series = "Mean", PI = FALSE) +
+  autolayer(fcs$Naive, series = "Naive", PI = FALSE) + autolayer(fcs$Drift, series = "Drift", PI = FALSE)
+t(sapply(fcs, function(f) accuracy(f, dj_te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+```
+
+#### Python
+
+```{python ex10d-py}
+dj_tr = fpp.window(dow, end=68); dj_te = fpp.window(dow, start=69)
+fcs = {"Mean": fpp.meanf(dj_tr, h=10), "Naive": fpp.naive(dj_tr, h=10), "Drift": fpp.rwf(dj_tr, drift=True, h=10)}
+p_ = ch3.plot_forecasts(dow, fcs, title="Dow Jones: benchmarks (train = first 68 days)")
+plt.show()
+ch3.accuracy_table(fcs, dj_te).round(3)
+```
+
+**Answer.** The index trends upward with no seasonality, so the **mean** method is useless.
+Holding out the last 10 days, the **naïve** method does best, drift is close (the up-trend
+flattened at the end) — for a stock index, naïve or drift are the natural choices; I'd prefer
+naïve (no assumption that the past average trend continues), with drift a close second.
+
+# Exercise 11 — IBM daily closing prices (`ibmclose`)
+
+### (a) Plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11a}
+autoplot(ibmclose) + ggtitle("IBM daily closing price") + xlab("Day")
+ggAcf(ibmclose)
+```
+
+#### Python
+
+```{python ex11a-py}
+ibm = fpp.load("ibmclose")
+p_ = fpp.autoplot(ibm, title="IBM daily closing price", xlab="Day")
+plt.show()
+p_ = fpp.acf_plot(ibm)
+plt.show()
+```
+
+### (b)–(c) 300/69 split and benchmark comparison {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11c}
+ibm_tr <- subset(ibmclose, end = 300); ibm_te <- subset(ibmclose, start = 301)
+h <- length(ibm_te)
+fcs <- list(Mean = meanf(ibm_tr, h = h), Naive = naive(ibm_tr, h = h), Drift = rwf(ibm_tr, drift = TRUE, h = h))
+autoplot(ibmclose) + autolayer(fcs$Mean, series = "Mean", PI = FALSE) +
+  autolayer(fcs$Naive, series = "Naive", PI = FALSE) + autolayer(fcs$Drift, series = "Drift", PI = FALSE)
+t(sapply(fcs, function(f) accuracy(f, ibm_te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+```
+
+#### Python
+
+```{python ex11c-py}
+ibm_tr = ibm.iloc[:300]; ibm_tr.attrs = dict(ibm.attrs)
+ibm_te = ibm.iloc[300:]
+h = len(ibm_te)
+fcs = {"Mean": fpp.meanf(ibm_tr, h=h), "Naive": fpp.naive(ibm_tr, h=h), "Drift": fpp.rwf(ibm_tr, drift=True, h=h)}
+p_ = ch3.plot_forecasts(ibm, fcs, title="IBM: benchmark forecasts")
+plt.show()
+ch3.accuracy_table(fcs, ibm_te).round(3)
+```
+
+### (d) Residuals of the preferred method (drift) {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11d}
+checkresiduals(fcs$Drift)
+```
+
+#### Python
+
+```{python ex11d-py}
+lb = fpp.checkresiduals(fcs["Drift"], df=0)   # match R's "Model df: 0"
+```
+
+**Answer.** The price wanders without seasonality. On the 69-day test set the **drift** method is
+best (the downward drift of the training period continued). Its residuals (the daily changes
+minus the average change) have mean zero but some autocorrelation remains: the Ljung-Box test gives
+p ≈ 0.01, so they are **not quite white noise**, and the histogram has heavy tails. (R 8.21's
+`checkresiduals()` uses 0 model degrees of freedom for drift; I pass `df=0` in Python to match.)
+
+# Exercise 12 — New one-family house sales (`hsales`)
+
+### (a) Plots {.tabset .tabset-pills}
+
+#### R
+
+```{r ex12a}
+autoplot(hsales) + ggtitle("Sales of new one-family houses, USA")
+ggseasonplot(hsales)
+ggsubseriesplot(hsales)
+ggAcf(hsales)
+```
+
+#### Python
+
+```{python ex12a-py}
+hsales = fpp.load("hsales")
+p_ = fpp.autoplot(hsales, title="Sales of new one-family houses, USA")
+plt.show()
+p_ = fpp.seasonplot(hsales)
+plt.show()
+p_ = fpp.subseriesplot(hsales)
+plt.show()
+p_ = fpp.acf_plot(hsales)
+plt.show()
+```
+
+### (b)–(c) Last two years as test set; compare benchmarks {.tabset .tabset-pills}
+
+#### R
+
+```{r ex12c}
+hs_tr <- window(hsales, end = c(1993, 11)); hs_te <- window(hsales, start = c(1993, 12))
+h <- length(hs_te)
+fcs <- list(Mean = meanf(hs_tr, h = h), Naive = naive(hs_tr, h = h),
+            SeasonalNaive = snaive(hs_tr, h = h), Drift = rwf(hs_tr, drift = TRUE, h = h))
+autoplot(window(hsales, start = 1988)) +
+  autolayer(fcs$Mean, series = "Mean", PI = FALSE) + autolayer(fcs$Naive, series = "Naive", PI = FALSE) +
+  autolayer(fcs$SeasonalNaive, series = "Seasonal naive", PI = FALSE) +
+  autolayer(fcs$Drift, series = "Drift", PI = FALSE)
+t(sapply(fcs, function(f) accuracy(f, hs_te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+```
+
+#### Python
+
+```{python ex12c-py}
+hs_tr = fpp.window(hsales, end=(1993, 11)); hs_te = fpp.window(hsales, start=(1993, 12))
+h = len(hs_te)
+fcs = {"Mean": fpp.meanf(hs_tr, h=h), "Naive": fpp.naive(hs_tr, h=h),
+       "Seasonal naive": fpp.snaive(hs_tr, h=h), "Drift": fpp.rwf(hs_tr, drift=True, h=h)}
+p_ = ch3.plot_forecasts(fpp.window(hsales, start=1988), fcs, title="hsales: benchmark forecasts")
+plt.show()
+ch3.accuracy_table(fcs, hs_te).round(3)
+```
+
+### (d) Residuals of the preferred method (seasonal naïve) {.tabset .tabset-pills}
+
+#### R
+
+```{r ex12d}
+checkresiduals(fcs$SeasonalNaive)
+```
+
+#### Python
+
+```{python ex12d-py}
+lb = fpp.checkresiduals(fcs["Seasonal naive"])
+```
+
+**Answer.** `hsales` has strong seasonality (spring peak) and a long housing cycle, no trend.
+The **seasonal naïve** method is clearly best on the last two years. Its residuals are, however,
+strongly autocorrelated (the cycle is not captured; ACF decays slowly and the Ljung-Box test
+rejects white noise), so there is room for a better model.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*
