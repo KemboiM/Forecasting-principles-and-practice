@@ -1,0 +1,613 @@
+---
+title: "Chapter 4 — Judgmental forecasts"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+# Only show real results: hide the matplotlib objects that plotting calls return
+def _quiet_displayhook(value, _orig=sys.displayhook):
+    import matplotlib.artist
+    items = value if isinstance(value, (list, tuple, np.ndarray)) else [value]
+    if len(items) and all(isinstance(i, matplotlib.artist.Artist) for i in np.ravel(np.asarray(items, dtype=object))):
+        return
+    _orig(value)
+sys.displayhook = _quiet_displayhook
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 4** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and examples are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+>
+> Chapter 4 is almost entirely conceptual — the book contains no code here. The code below
+> is **my own illustration** of each idea (clearly marked), using real `fpp2` data wherever
+> possible and fixed, documented numbers where a "panel of experts" is needed, so that R
+> and Python give identical results.
+
+# Learning goals
+
+* Know when judgement is the only option and when it should only *adjust* a statistical forecast.
+* Recognise the biases of judgement: inconsistency, optimism, political agendas, **anchoring**.
+* Apply the key principles: clear task, systematic approach, document, evaluate, segregate.
+* Understand the **Delphi method**, **forecasting by analogy** and **scenario forecasting**.
+* Know the methods used for **new products** and the rules for **judgmental adjustments**.
+
+# Introduction: when do we use judgement?
+
+Judgement is needed when there is **no history** (a new product, a new competitor, a policy
+with no precedent such as Australia's 2012 plain-packaging law for cigarettes), or when the
+data are **incomplete or delayed** (e.g. *nowcasting* GDP, which is only published quarterly).
+Judgmental accuracy improves with (i) domain knowledge and (ii) timely information.
+
+Three settings:
+
+1. **No data** → judgement is the only option (most of this chapter).
+2. **Data available, statistical forecasts adjusted by judgement** (Section 4.7).
+3. **Data available, statistical and judgmental forecasts made independently and combined**
+   (forecast combinations, Section 12.4).
+
+When data exist, statistical forecasts should at least be the **starting point** — they are
+generally more accurate than judgement alone.
+
+# 4.1 Beware of limitations
+
+Judgmental forecasts are subjective, so:
+
+* **Inconsistent** — limited memory and attention, misunderstanding of causality, mood.
+* **Agendas** — when forecasts are used as targets, a manager may forecast low to "beat" them.
+* **Optimism** — a launch team rarely forecasts failure; group meetings amplify this.
+* **Anchoring** — forecasts stick to a familiar reference point (often the *last observation*),
+  under-weighting new information and creating systematic bias.
+
+### My illustration: the cost of anchoring on the last value {.tabset .tabset-pills}
+
+Anchoring on the last observation is exactly the **naïve** forecast. For monthly
+antidiabetic drug sales (`a10`) it ignores the strong seasonality and trend, so it is far less
+accurate than methods that use the whole history.
+
+#### R
+
+```{r anchoring}
+a10_tr <- window(a10, end = c(2005, 12))
+a10_te <- window(a10, start = 2006)
+h <- length(a10_te)
+fc_anchor <- naive(a10_tr, h = h)          # "anchored" judgement = last value
+fc_snaive <- snaive(a10_tr, h = h)
+fc_ets    <- forecast(ets(a10_tr), h = h)
+autoplot(a10) +
+  autolayer(fc_anchor, series = "Anchored on last value (naive)", PI = FALSE) +
+  autolayer(fc_ets, series = "ETS (uses all the history)", PI = FALSE) +
+  ggtitle("Anchoring vs. a statistical model: antidiabetic drug sales") + ylab("$ million") +
+  guides(colour = guide_legend(title = NULL))
+rbind(Anchored = accuracy(fc_anchor, a10_te)["Test set", c("RMSE", "MAPE")],
+      SeasonalNaive = accuracy(fc_snaive, a10_te)["Test set", c("RMSE", "MAPE")],
+      ETS = accuracy(fc_ets, a10_te)["Test set", c("RMSE", "MAPE")])
+```
+
+#### Python
+
+```{python anchoring-py}
+from statsforecast.models import AutoETS
+
+a10 = fpp.load("a10")
+a10_tr = fpp.window(a10, end=(2005, 12))
+a10_te = fpp.window(a10, start=2006)
+h = len(a10_te)
+fc_anchor = fpp.naive(a10_tr, h=h)
+fc_snaive = fpp.snaive(a10_tr, h=h)
+ets_a10 = AutoETS(season_length=12).fit(a10_tr.to_numpy())
+fc_ets = ets_a10.predict(h=h)["mean"]
+ax = fpp.autoplot(a10, title="Anchoring vs. a statistical model: antidiabetic drug sales", ylab="$ million")
+tf = fpp.ts_time(a10_te)
+ax.plot(tf, fc_anchor.mean.to_numpy(), label="Anchored on last value (naive)")
+ax.plot(tf, fc_ets, label=f"{ets_a10.model_['method']} (uses all the history)")
+ax.legend(); plt.show()
+cols = ["RMSE", "MAPE"]
+pd.DataFrame({"Anchored": fpp.accuracy(fc_anchor, a10_te).loc["Test set", cols],
+              "SeasonalNaive": fpp.accuracy(fc_snaive, a10_te).loc["Test set", cols],
+              "ETS": fpp.accuracy(fc_ets, a10_te, train=a10_tr).loc["Test set", cols]}).T.round(3)
+```
+
+# 4.2 Key principles
+
+A structured, well-documented process limits the biases above:
+
+| Principle | What it means in practice |
+|---|---|
+| **Set the task clearly and concisely** | Precise definitions; no emotive or irrelevant information. A preliminary information-gathering round can help. |
+| **Implement a systematic approach** | Checklists of relevant information and how to weight it (price, competition, economy, target population ...). Invest in decision rules. |
+| **Document and justify** | Written rules and assumptions → consistency and accountability → less bias; enables evaluation. |
+| **Systematically evaluate forecasts** | Keep records of forecasts and compare with outcomes; feedback improves accuracy. |
+| **Segregate forecasters and users** | Forecasts ≠ targets ≠ plans. Upward "safety" adjustments belong to planning, not forecasting. Explain forecasts to users. |
+
+**Example — Pharmaceutical Benefits Scheme (PBS).** 84 groups of medicines × 4 patient
+categories = 672 monthly series feed a budget of over A$7 billion. Forecasts are made per capita
+and multiplied by population forecasts. Judgement was used for **new listings** (a highly
+structured, documented process with two evaluation rounds and follow-up checks at 12 and 24
+months) and for **policy impacts** (no structure, one person, no documentation). Judgement beat
+pure statistics, but the authors recommended guidelines, documentation, at least two forecasters
+from different areas, and a review one year after each new policy.
+
+### My illustration: a forecast log for PBS data {.tabset .tabset-pills}
+
+"Systematically evaluate forecasts" means keeping a **forecast log**. Here `h02` (monthly
+corticosteroid sales from the PBS) is forecast one month ahead for each of the last 24 months,
+the forecasts are recorded, and accuracy is computed once the actual values arrive.
+
+#### R
+
+```{r forecast-log}
+log_start <- length(h02) - 24
+forecast_log <- data.frame()
+for (i in log_start:(length(h02) - 1)) {
+  hist <- subset(h02, end = i)
+  forecast_log <- rbind(forecast_log, data.frame(
+    origin   = i,
+    snaive   = as.numeric(snaive(hist, h = 1)$mean),
+    ets      = as.numeric(forecast(ets(hist, model = "MAM", damped = FALSE), h = 1)$mean),
+    actual   = as.numeric(h02[i + 1])))
+}
+head(round(forecast_log, 4))
+with(forecast_log, c(MAPE_snaive = mean(abs(actual - snaive) / actual) * 100,
+                     MAPE_ets    = mean(abs(actual - ets) / actual) * 100))
+```
+
+#### Python
+
+```{python forecast-log-py}
+from statsmodels.tsa.exponential_smoothing.ets import ETSModel
+
+h02 = fpp.load("h02")
+log_start = len(h02) - 24
+rows = []
+for i in range(log_start, len(h02)):
+    hist = h02.iloc[:i]
+    hist.attrs = dict(h02.attrs)
+    m = ETSModel(hist.to_numpy(), error="mul", trend="add", seasonal="mul",
+                 seasonal_periods=12).fit(disp=False)
+    rows.append({"origin": i,
+                 "snaive": float(fpp.snaive(hist, h=1).mean.iloc[0]),
+                 "ets": float(m.forecast(1)[0]),
+                 "actual": float(h02.iloc[i])})
+forecast_log = pd.DataFrame(rows)
+print(forecast_log.head().round(4))
+mape = lambda f: float(np.mean(np.abs(forecast_log.actual - forecast_log[f]) / forecast_log.actual) * 100)
+{"MAPE_snaive": round(mape("snaive"), 3), "MAPE_ets": round(mape("ets"), 3)}
+```
+
+# 4.3 The Delphi method
+
+Invented at RAND (Helmer and Dalkey, 1950s). Assumption: **group forecasts beat individual
+forecasts**. A *facilitator* runs the process:
+
+1. Assemble a panel of experts (typically 5–20, diverse expertise).
+2. Set and distribute the forecasting task.
+3. Experts return forecasts **with justifications**; these are summarised.
+4. Feedback goes back; experts revise. Repeat until consensus is *satisfactory*
+   (variability reduced — not full agreement). Usually 2–3 rounds; more rounds → drop-outs.
+5. Final forecast = aggregate (usually **equal weights**), watching for extreme values.
+
+Key design points: **anonymity** (no pressure from seniority or loud voices; experts need not
+meet, so it is cheap and flexible), **feedback** with summary statistics and graphs, e.g.
+pointing at forecasts outside the interquartile range and their justifications. Limitations:
+slow, panels can lose interest. A common variation is **estimate–talk–estimate** (experts
+talk between rounds but still submit anonymously — risk: the loudest voice dominates).
+The **facilitator** designs the process, gives feedback and builds the final forecast.
+
+### My illustration: three Delphi rounds {.tabset .tabset-pills}
+
+Ten anonymous experts forecast first-year sales of a new product (thousand units). The
+numbers and each expert's "willingness to move" are fixed (not random), so R and Python agree
+exactly. After each round the facilitator feeds back the median and IQR and flags responses
+outside the IQR; each expert moves part of the way towards the median.
+
+#### R
+
+```{r delphi}
+round1 <- c(120, 135, 150, 95, 160, 210, 140, 130, 175, 60)
+move   <- c(0.5, 0.3, 0.6, 0.4, 0.5, 0.2, 0.5, 0.6, 0.4, 0.3)   # how far each expert moves
+rounds <- list(round1)
+for (r in 2:3) {
+  prev <- rounds[[r - 1]]
+  rounds[[r]] <- prev + move * (median(prev) - prev)
+}
+delphi <- data.frame(round = 1:3,
+  median = sapply(rounds, median), IQR = sapply(rounds, IQR),
+  outside_IQR = sapply(rounds, function(x) {
+    q <- quantile(x, c(.25, .75)); sum(x < q[1] | x > q[2]) }),
+  cv = sapply(rounds, function(x) sd(x) / mean(x)))
+round(delphi, 3)
+final <- rounds[[3]]
+c(mean = mean(final), median = median(final), trimmed_mean_10pct = mean(final, trim = 0.1))
+```
+
+#### Python
+
+```{python delphi-py}
+round1 = np.array([120, 135, 150, 95, 160, 210, 140, 130, 175, 60], dtype=float)
+move = np.array([0.5, 0.3, 0.6, 0.4, 0.5, 0.2, 0.5, 0.6, 0.4, 0.3])
+rounds = [round1]
+for r in range(2):
+    prev = rounds[-1]
+    rounds.append(prev + move * (np.median(prev) - prev))
+
+def outside_iqr(x):
+    q1, q3 = np.percentile(x, [25, 75])          # same as R's default quantile type 7
+    return int(np.sum((x < q1) | (x > q3)))
+
+delphi = pd.DataFrame({
+    "round": [1, 2, 3],
+    "median": [np.median(x) for x in rounds],
+    "IQR": [np.subtract(*np.percentile(x, [75, 25])) for x in rounds],
+    "outside_IQR": [outside_iqr(x) for x in rounds],
+    "cv": [np.std(x, ddof=1) / np.mean(x) for x in rounds]})
+print(delphi.round(3))
+from scipy import stats
+final = rounds[-1]
+{"mean": final.mean(), "median": np.median(final), "trimmed_mean_10pct": stats.trim_mean(final, 0.1)}
+```
+
+The spread (IQR, coefficient of variation) shrinks each round: that is the "satisfactory
+consensus" the facilitator is looking for. The trimmed mean protects the final forecast from
+the extreme expert.
+
+# 4.4 Forecasting by analogy
+
+Base the forecast on similar past situations — like a house appraiser comparing a house with
+similar recent sales (land size, bedrooms, bathrooms, garage ...).
+
+**Example (Kahneman & Lovallo):** a team writing a high-school curriculum in Israel forecast
+18–30 months. A curriculum expert looked at analogous projects: 40% *never finished*; the rest
+took **7–10 years**. The project took **8 years**. Lesson: the "outside view" from analogies
+can be far more realistic than the team's own view.
+
+Use **several analogies** and **several attributes**, with a documented scoring system.
+
+**Structured analogies** (Green & Armstrong, 2007), run by a facilitator:
+
+1. assemble experts with experience of analogous situations;
+2. set the task;
+3. experts list as many analogies as they can and forecast from each;
+4. they rate each analogy's similarity to the target;
+5. the facilitator combines them with a set rule, e.g. a similarity-weighted average.
+
+Experts with **more than two analogies** and **direct experience** were the most accurate.
+
+### My illustration: a similarity-weighted structured analogy {.tabset .tabset-pills}
+
+Analogies for the curriculum project (durations in years, similarity rated 0–10 by the
+experts; numbers chosen to match the story above, not real data).
+
+#### R
+
+```{r analogy}
+analogies <- data.frame(
+  analogy    = c("Curriculum A", "Curriculum B", "Curriculum C", "Curriculum D", "Team's own view"),
+  years      = c(7, 10, 8.5, 9, 2),
+  similarity = c(8, 6, 9, 5, 2))
+analogies$weight <- analogies$similarity / sum(analogies$similarity)
+analogies
+c(similarity_weighted = sum(analogies$weight * analogies$years),
+  equal_weight_excl_own_view = mean(analogies$years[1:4]),
+  P_complete = 1 - 0.40)          # 40% of analogous projects never finished
+```
+
+#### Python
+
+```{python analogy-py}
+analogies = pd.DataFrame({
+    "analogy": ["Curriculum A", "Curriculum B", "Curriculum C", "Curriculum D", "Team's own view"],
+    "years": [7, 10, 8.5, 9, 2],
+    "similarity": [8, 6, 9, 5, 2]})
+analogies["weight"] = analogies.similarity / analogies.similarity.sum()
+print(analogies)
+{"similarity_weighted": float((analogies.weight * analogies.years).sum()),
+ "equal_weight_excl_own_view": float(analogies.years[:4].mean()),
+ "P_complete": 1 - 0.40}
+```
+
+# 4.5 Scenario forecasting
+
+Instead of the *most likely* outcome, generate forecasts for **plausible scenarios**, each of
+which may be unlikely. Consider all drivers, their impacts and interactions. Typically "best",
+"middle" and "worst" cases are shown; documenting the extremes supports **contingency planning**.
+Decision makers often take part, which may add bias but helps them understand and use the results.
+
+### My illustration: best / middle / worst cases for domestic visitor nights {.tabset .tabset-pills}
+
+Using the Australian domestic visitor nights data behind Figure 4.2 (observed 1998–2011, from the
+authors' book source, file `tfc_forecasts.csv`): scenarios built from the observed annual growth rates
+(their 10th, 50th and 90th percentiles) applied from 2011 onwards.
+
+#### R
+
+```{r scenario}
+tfc <- read.csv("tfc_forecasts.csv")
+vn <- ts(tfc$Data / 1000, start = 1998)                     # million visitor nights
+g  <- diff(log(vn))                                         # annual growth rates
+growth <- quantile(g, c(0.1, 0.5, 0.9))
+h <- 5
+scen <- sapply(growth, function(r) as.numeric(tail(vn, 1)) * exp(r * (1:h)))
+scen <- ts(scen, start = 2012); colnames(scen) <- c("Worst", "Middle", "Best")
+round(growth, 4)
+autoplot(vn) + autolayer(scen) +
+  ggtitle("Scenario forecasts: domestic visitor nights") + ylab("Visitor nights (millions)") + xlab("Year") +
+  guides(colour = guide_legend(title = NULL))
+```
+
+#### Python
+
+```{python scenario-py}
+tfc = pd.read_csv("tfc_forecasts.csv")
+vn = fpp.make_ts(tfc["Data"] / 1000, start=1998, frequency=1, name="visitor_nights")
+g = np.diff(np.log(vn.to_numpy()))
+growth = np.quantile(g, [0.1, 0.5, 0.9])                 # same as R quantile type 7
+h = 5
+scen = pd.DataFrame({name: vn.iloc[-1] * np.exp(r * np.arange(1, h + 1))
+                     for name, r in zip(["Worst", "Middle", "Best"], growth)},
+                    index=np.arange(2012, 2012 + h))
+print(np.round(growth, 4))
+fig, ax = plt.subplots()
+ax.plot(fpp.ts_time(vn), vn.to_numpy(), color="black", label="Observed")
+for c in scen.columns:
+    ax.plot(scen.index, scen[c], label=c)
+ax.set_title("Scenario forecasts: domestic visitor nights"); ax.set_ylabel("Visitor nights (millions)")
+ax.legend(); plt.show()
+```
+
+# 4.6 New product forecasting
+
+"New" can mean a brand-new product, a "new and improved" variant, a new pricing scheme, or an
+existing product in a new market. Without history, Delphi, analogies and scenarios all apply.
+Three less structured (and more bias-prone) methods are common:
+
+* **Sales force composite** — each outlet's salesperson forecasts, then aggregate. Close to
+  customers, but it **breaks the segregation principle**: forecasts may be set low (if they become
+  targets) or high (enthusiasm); salespeople rarely have forecasting training, and they feel customer
+  displeasure first-hand.
+* **Executive opinion** — senior managers from different functions forecast in a meeting.
+  Diverse knowledge, but all the group-meeting biases; must be **documented and accountable**;
+  estimate–talk–estimate can help.
+* **Customer intentions** — surveys asking how likely customers are to buy (highly likely …
+  highly unlikely). Issues: representative samples, cost, non-response, and the gap between
+  **intention and behaviour** — intentions predict behaviour best when measured just before
+  purchase and for variations of familiar products.
+
+Always document the forecasts and reasoning so they can be evaluated when data arrive.
+
+### My illustration: turning purchase intentions into a sales forecast {.tabset .tabset-pills}
+
+A survey of 1,000 customers (made-up counts) with assumed conversion rates from intention to
+purchase. The conversion rates are the judgmental part and should be documented; here they are
+also used to show the gap between stated intention and expected behaviour.
+
+#### R
+
+```{r intentions}
+survey <- data.frame(
+  answer     = c("Highly likely", "Likely", "Possible", "Unlikely", "Highly unlikely"),
+  n          = c(80, 170, 300, 250, 200),
+  conversion = c(0.60, 0.30, 0.10, 0.03, 0.01))      # assumed share who actually buy
+market_size <- 2e6                                    # customers in the target market
+survey$share <- survey$n / sum(survey$n)
+stated  <- sum(survey$share[1:2])                     # "would buy" if we took answers literally
+expected <- sum(survey$share * survey$conversion)
+c(stated_intention = stated, expected_purchase_rate = expected,
+  forecast_units = expected * market_size)
+```
+
+#### Python
+
+```{python intentions-py}
+survey = pd.DataFrame({
+    "answer": ["Highly likely", "Likely", "Possible", "Unlikely", "Highly unlikely"],
+    "n": [80, 170, 300, 250, 200],
+    "conversion": [0.60, 0.30, 0.10, 0.03, 0.01]})
+market_size = 2e6
+survey["share"] = survey.n / survey.n.sum()
+stated = survey.share[:2].sum()
+expected = (survey.share * survey.conversion).sum()
+{"stated_intention": stated, "expected_purchase_rate": expected,
+ "forecast_units": expected * market_size}
+```
+
+# 4.7 Judgmental adjustments
+
+With historical data, statistical forecasts are often adjusted by judgement — useful for
+promotions, sporting events, holidays or recent events not yet in the data, **if** done well.
+
+* **Use adjustments sparingly.** Users adjust too often, partly to feel "ownership". Do **not**
+  adjust to "correct" patterns the model supposedly missed — people see patterns in noise.
+  Adjust only with **important extra information** not in the model. Large, informed adjustments
+  tend to help; **small** (especially optimistic) adjustments tend to hurt.
+* **Apply a structured approach** — follow Section 4.2; documenting and justifying makes
+  unnecessary overrides harder. If done in a meeting, review the key markets/products **first**
+  (fatigue reduces adjustments later in the day); a Delphi setting helps.
+
+**Example — Tourism Forecasting Committee (TFC).** Tourism Australia's model-based forecasts are
+adjusted in two consensus rounds (technical committee, then industry/government experts). In 2008
+the authors found the published forecasts optimistic; data to 2011 confirm it (Figure 4.2).
+Possible causes: forecasts confused with targets, poor segregation, group optimism, and domestic
+tourism being discussed late in the day.
+
+### Figure 4.2: TFC forecasts vs. model forecasts {.tabset .tabset-pills}
+
+#### R
+
+```{r tfc}
+tfcvn <- ts(tfc[, -1], start = 1998) / 1000
+colnames(tfcvn) <- c("Observed data", "TFC forecasts", "Regression model forecasts", "ETS model forecasts")
+autoplot(tfcvn) + xlab("Year") + ylab("Total visitor nights (millions)") +
+  ggtitle("Long-run annual forecasts for domestic visitor nights") +
+  scale_colour_manual(name = "", values = c("#000000", "#E69F00", "#56B4E9", "#CC79A7"),
+                      breaks = colnames(tfcvn))
+```
+
+#### Python
+
+```{python tfc-py}
+tfcvn = tfc.set_index("Year") / 1000
+labels = {"Data": "Observed data", "TFC": "TFC forecasts",
+          "Regression": "Regression model forecasts", "ETS": "ETS model forecasts"}
+colors = {"Data": "#000000", "TFC": "#E69F00", "Regression": "#56B4E9", "ETS": "#CC79A7"}
+fig, ax = plt.subplots()
+for c in tfcvn.columns:
+    ax.plot(tfcvn.index, tfcvn[c], label=labels[c], color=colors[c])
+ax.set_xlabel("Year"); ax.set_ylabel("Total visitor nights (millions)")
+ax.set_title("Long-run annual forecasts for domestic visitor nights"); ax.legend(); plt.show()
+```
+
+### My illustration: small, uninformed adjustments {.tabset .tabset-pills}
+
+What happens to the `a10` ETS forecasts (from Section 4.1) after "gut-feel" adjustments that
+carry no new information? A +3% optimistic tweak, and alternating ±3% tweaks.
+
+#### R
+
+```{r adjust}
+adj_alt <- rep(c(0.03, -0.03), length.out = length(a10_te))
+rbind(
+  "No adjustment"        = accuracy(fc_ets$mean, a10_te)[, c("ME", "RMSE", "MAPE")],
+  "+3% optimistic"       = accuracy(fc_ets$mean * 1.03, a10_te)[, c("ME", "RMSE", "MAPE")],
+  "Alternating +/-3%"    = accuracy(fc_ets$mean * (1 + adj_alt), a10_te)[, c("ME", "RMSE", "MAPE")])
+```
+
+#### Python
+
+```{python adjust-py}
+adj_alt = np.resize([0.03, -0.03], len(a10_te))
+cols = ["ME", "RMSE", "MAPE"]
+pd.DataFrame({
+    "No adjustment": fpp.accuracy(fc_ets, a10_te).loc["Test set", cols],
+    "+3% optimistic": fpp.accuracy(fc_ets * 1.03, a10_te).loc["Test set", cols],
+    "Alternating +/-3%": fpp.accuracy(fc_ets * (1 + adj_alt), a10_te).loc["Test set", cols]}).T.round(3)
+```
+
+**Reading the result honestly.** The alternating "noise" adjustments make the forecasts worse,
+as the book warns. The +3% tweak happens to *help* here, because this ETS model under-forecast the
+2006–2008 drug sales (negative mean error) — but nobody could have known that in advance without
+evidence. That is exactly why adjustments must be **documented and evaluated** with a forecast log
+(Section 4.2): only systematic records reveal whether a model is biased and an adjustment is justified.
+
+# Model testing — every model used in this chapter
+
+Chapter 4 fits few models, but every one used above is tested on data it has not seen, and the
+**judgmental TFC forecasts** are tested against simple models fitted only to the data available
+when the TFC made its forecasts (1998–2004).
+
+| Test | Training | Test |
+|---|---|---|
+| `a10`: naive (anchoring), seasonal naive, ETS | 1991–2005 | 2006–2008 (30 months) |
+| `h02`: one-step forecast log, seasonal naive and ETS(M,A,M) | rolling origin | last 24 months |
+| Visitor nights: TFC (judgement), book's regression & ETS, my naive / drift / ETS(A,N,N) / linear trend | 1998–2004 | 2005–2011 |
+
+### Test-set accuracy {.tabset .tabset-pills}
+
+#### R
+
+```{r model-testing}
+vn_tr <- window(vn, end = 2004); vn_te <- window(vn, start = 2005)
+hv <- length(vn_te)
+acc <- function(f, x) accuracy(f, x)["Test set", c("ME", "RMSE", "MAPE")]
+given <- function(col) ts(tfc[tfc$Year >= 2005, col] / 1000, start = 2005)
+results_r <- rbind(
+  "a10: naive (anchoring)"          = acc(fc_anchor, a10_te),
+  "a10: seasonal naive"             = acc(fc_snaive, a10_te),
+  "a10: ETS (auto)"                 = acc(fc_ets, a10_te),
+  "h02: seasonal naive, 1-step log" = with(forecast_log, c(ME = mean(actual - snaive),
+                                       RMSE = sqrt(mean((actual - snaive)^2)), MAPE = mean(abs(actual - snaive) / actual) * 100)),
+  "h02: ETS(M,A,M), 1-step log"     = with(forecast_log, c(ME = mean(actual - ets),
+                                       RMSE = sqrt(mean((actual - ets)^2)), MAPE = mean(abs(actual - ets) / actual) * 100)),
+  "VN: TFC (judgmental)"            = acc(given("TFC"), vn_te),
+  "VN: book's regression"           = acc(given("Regression"), vn_te),
+  "VN: book's ETS"                  = acc(given("ETS"), vn_te),
+  "VN: naive"                       = acc(naive(vn_tr, h = hv), vn_te),
+  "VN: drift"                       = acc(rwf(vn_tr, drift = TRUE, h = hv), vn_te),
+  "VN: ETS(A,N,N)"                  = acc(forecast(ets(vn_tr, model = "ANN"), h = hv), vn_te),
+  "VN: linear trend (tslm)"         = acc(forecast(tslm(vn_tr ~ trend), h = hv), vn_te))
+round(results_r, 3)
+```
+
+#### Python
+
+```{python model-testing-py}
+import statsmodels.api as sm
+
+vn_tr = fpp.window(vn, end=2004); vn_te = fpp.window(vn, start=2005)
+hv = len(vn_te)
+cols = ["ME", "RMSE", "MAPE"]
+acc = lambda f, x, tr=None: fpp.accuracy(f, x, train=tr).loc["Test set", cols]
+given = lambda col: tfc.loc[tfc.Year >= 2005, col].to_numpy() / 1000
+log_acc = lambda f: pd.Series({"ME": np.mean(forecast_log.actual - forecast_log[f]),
+                               "RMSE": np.sqrt(np.mean((forecast_log.actual - forecast_log[f]) ** 2)),
+                               "MAPE": np.mean(np.abs(forecast_log.actual - forecast_log[f]) / forecast_log.actual) * 100})
+ann = AutoETS(season_length=1, model="ANN").fit(vn_tr.to_numpy()).predict(h=hv)["mean"]
+X = sm.add_constant(np.arange(1, len(vn_tr) + 1))
+lin = sm.OLS(vn_tr.to_numpy(), X).fit().predict(sm.add_constant(np.arange(len(vn_tr) + 1, len(vn_tr) + hv + 1)))
+results_py = pd.DataFrame({
+    "a10: naive (anchoring)": acc(fc_anchor, a10_te),
+    "a10: seasonal naive": acc(fc_snaive, a10_te),
+    "a10: ETS (auto)": acc(fc_ets, a10_te, a10_tr),
+    "h02: seasonal naive, 1-step log": log_acc("snaive"),
+    "h02: ETS(M,A,M), 1-step log": log_acc("ets"),
+    "VN: TFC (judgmental)": acc(given("TFC"), vn_te, vn_tr),
+    "VN: book's regression": acc(given("Regression"), vn_te, vn_tr),
+    "VN: book's ETS": acc(given("ETS"), vn_te, vn_tr),
+    "VN: naive": acc(fpp.naive(vn_tr, h=hv), vn_te),
+    "VN: drift": acc(fpp.rwf(vn_tr, drift=True, h=hv), vn_te),
+    "VN: ETS(A,N,N)": acc(ann, vn_te, vn_tr),
+    "VN: linear trend (OLS)": acc(lin, vn_te, vn_tr)}).T
+results_py.round(3)
+```
+
+### What the test shows
+
+* **Anchoring is expensive**: the naive "last value" forecast of `a10` has a much larger error than
+  seasonal naive or ETS.
+* In the `h02` forecast log the two methods are close one month ahead (MAPE about 7.5–8%), and
+  which one "wins" depends on the ETS fit: R's ETS(M,A,M) re-fits are slightly worse than the seasonal
+  naive method, Python's slightly better. A log like this is what turns opinions about a method into
+  evidence.
+* The **TFC judgmental forecasts kept rising** (to about 303 million nights in 2011) while the
+  authors' regression and ETS models projected flat or falling numbers; the TFC's mean error
+  (−19.3) is more than twice that of the book's ETS model (−8.5): the published forecasts were
+  **optimistic**. My simple models fitted to only seven annual points (1998–2004) did no better than
+  the TFC — the 2005–2011 decline surprised every method that only extrapolated the recent level
+  or growth — which is why the book's models, built on longer and richer data, are the fair comparison.
+* **R vs Python.** The naive, seasonal naive, drift, linear trend and all the "given" forecasts agree
+  exactly. ETS models agree in structure; automatic ETS selection/estimation on `a10` and the
+  ETS(M,A,M) re-fits in the `h02` log can differ slightly because the optimisers differ.
+
+# Key takeaways
+
+* Use judgement when there are no data; otherwise start from statistical forecasts.
+* Judgement suffers from inconsistency, agendas, optimism and anchoring — structure limits the damage.
+* Delphi: anonymous experts, controlled feedback, iterate to satisfactory consensus, equal-weight aggregate.
+* Analogies (preferably structured, several of them) give a realistic "outside view".
+* Scenarios describe plausible extremes for planning, not the most likely outcome.
+* Adjust statistical forecasts sparingly, only with real extra information, and always document and evaluate.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*

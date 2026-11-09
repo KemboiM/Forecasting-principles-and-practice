@@ -1,0 +1,209 @@
+---
+title: "Chapter 4 — Practice exercises"
+subtitle: "My own practice for Chapter 4 · Forecasting: Principles and Practice (2nd ed.) · R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+# Only show real results: hide the matplotlib objects that plotting calls return
+def _quiet_displayhook(value, _orig=sys.displayhook):
+    import matplotlib.artist
+    items = value if isinstance(value, (list, tuple, np.ndarray)) else [value]
+    if len(items) and all(isinstance(i, matplotlib.artist.Artist) for i in np.ravel(np.asarray(items, dtype=object))):
+        return
+    _orig(value)
+sys.displayhook = _quiet_displayhook
+```
+
+> **Acknowledgement.** Chapter 4 of *Forecasting: Principles and Practice* (2nd ed.) by
+> **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>) **has no exercise
+> section**. The exercises below are **my own practice questions**, written to apply the chapter's
+> ideas; they are not the authors'. The TFC data are from the authors' Figure 4.2.
+
+# Practice 1 — How many Delphi rounds are needed?
+
+*Using the ten expert forecasts from the notes, run the Delphi revision rule for up to six rounds
+under two panels: (a) the original panel with different willingness to move, and (b) a "stubborn"
+panel where every expert moves only 20% of the way to the median. How many rounds does each
+panel need for the coefficient of variation to fall below 0.15?*
+
+### Solution {.tabset .tabset-pills}
+
+#### R
+
+```{r p1}
+round1 <- c(120, 135, 150, 95, 160, 210, 140, 130, 175, 60)
+run_delphi <- function(x, move, max_rounds = 6) {
+  cv <- numeric(max_rounds); med <- numeric(max_rounds)
+  for (r in 1:max_rounds) {
+    cv[r] <- sd(x) / mean(x); med[r] <- median(x)
+    x <- x + move * (median(x) - x)
+  }
+  data.frame(round = 1:max_rounds, median = med, cv = round(cv, 4))
+}
+panel_a <- run_delphi(round1, c(0.5, 0.3, 0.6, 0.4, 0.5, 0.2, 0.5, 0.6, 0.4, 0.3))
+panel_b <- run_delphi(round1, rep(0.2, 10))
+cbind(panel_a, cv_stubborn = panel_b$cv)
+c(rounds_needed_a = min(which(panel_a$cv < 0.15)), rounds_needed_b = min(which(panel_b$cv < 0.15)))
+```
+
+#### Python
+
+```{python p1-py}
+round1 = np.array([120, 135, 150, 95, 160, 210, 140, 130, 175, 60], dtype=float)
+
+def run_delphi(x, move, max_rounds=6):
+    x = x.copy(); out = []
+    for r in range(1, max_rounds + 1):
+        out.append({"round": r, "median": np.median(x), "cv": round(np.std(x, ddof=1) / np.mean(x), 4)})
+        x = x + move * (np.median(x) - x)
+    return pd.DataFrame(out)
+
+panel_a = run_delphi(round1, np.array([0.5, 0.3, 0.6, 0.4, 0.5, 0.2, 0.5, 0.6, 0.4, 0.3]))
+panel_b = run_delphi(round1, np.repeat(0.2, 10))
+print(panel_a.assign(cv_stubborn=panel_b.cv))
+{"rounds_needed_a": int(panel_a["round"][panel_a.cv < 0.15].min()),
+ "rounds_needed_b": int(panel_b["round"][panel_b.cv < 0.15].min())}
+```
+
+**Answer.** The original panel reaches the target in round 4 (three rounds of feedback); the stubborn
+panel needs more rounds. In practice that is a problem — the book warns that experts drop out when
+there are too many rounds — so a facilitator facing a stubborn panel should improve the *feedback*
+(e.g. circulate the justifications of the outlying forecasts) rather than simply add rounds.
+
+# Practice 2 — How optimistic were the TFC forecasts, by horizon?
+
+*For each forecast horizon (2005 = 1 year ahead, …, 2011 = 7 years ahead), compute the percentage
+error (actual − forecast) / actual × 100 of the TFC, regression and ETS forecasts. Does the TFC's
+bias grow with the horizon?*
+
+### Solution {.tabset .tabset-pills}
+
+#### R
+
+```{r p2}
+tfc <- read.csv("tfc_forecasts.csv")
+fut <- tfc[tfc$Year >= 2005, ]
+pe <- with(fut, data.frame(Year, horizon = Year - 2004,
+  TFC = 100 * (Data - TFC) / Data,
+  Regression = 100 * (Data - Regression) / Data,
+  ETS = 100 * (Data - ETS) / Data))
+round(pe, 2)
+colMeans(pe[, c("TFC", "Regression", "ETS")])                 # mean percentage error (MPE)
+coef(lm(TFC ~ horizon, data = pe))["horizon"]                # change in bias per extra year ahead
+```
+
+#### Python
+
+```{python p2-py}
+import statsmodels.formula.api as smf
+
+tfc = pd.read_csv("tfc_forecasts.csv")
+fut = tfc[tfc.Year >= 2005]
+pe = pd.DataFrame({"Year": fut.Year, "horizon": fut.Year - 2004,
+                   "TFC": 100 * (fut.Data - fut.TFC) / fut.Data,
+                   "Regression": 100 * (fut.Data - fut.Regression) / fut.Data,
+                   "ETS": 100 * (fut.Data - fut.ETS) / fut.Data})
+print(pe.round(2))
+print(pe[["TFC", "Regression", "ETS"]].mean())
+smf.ols("TFC ~ horizon", data=pe).fit().params["horizon"]
+```
+
+**Answer.** Apart from 2007, all three sets of forecasts are too high (negative percentage errors)
+because visitor nights fell after 2004. The TFC is the most biased (mean percentage error about −7%
+versus −5% for regression and −3% for ETS), and its error worsens by about 2.2 percentage points for
+every extra year of horizon, reaching −12% to −14% at 5–7 years ahead. The judgmental process added
+*long-run optimism* — exactly the pattern the authors described in 2008.
+
+# Practice 3 — An informed vs. an uninformed adjustment
+
+*Daily electricity demand (`elecdaily`): fit an ETS model to the first 300 days (it knows nothing about
+temperature) and forecast the last 65 days. Then compare three versions of the forecasts:*
+*(a) no adjustment; (b) an "uninformed" adjustment of +2% on every day; (c) an "informed"
+adjustment that uses the known temperatures — the extra information the ETS model does not have —
+by regressing the ETS training errors on temperature, temperature² and the working-day indicator,
+and adding the predicted error to the forecast.*
+
+### Solution {.tabset .tabset-pills}
+
+#### R
+
+```{r p3}
+train <- subset(elecdaily, end = 300); test <- subset(elecdaily, start = 301)
+h <- nrow(test)
+fit <- ets(train[, "Demand"])
+fc  <- forecast(fit, h = h)$mean
+err <- as.numeric(train[, "Demand"] - fitted(fit))           # response-scale training errors
+adj_model <- lm(err ~ Temperature + I(Temperature^2) + WorkDay, data = as.data.frame(train))
+informed  <- fc + predict(adj_model, newdata = as.data.frame(test))
+actual <- test[, "Demand"]
+rbind("(a) no adjustment"          = accuracy(fc, actual)[, c("ME", "RMSE", "MAPE")],
+      "(b) +2% uninformed"         = accuracy(fc * 1.02, actual)[, c("ME", "RMSE", "MAPE")],
+      "(c) informed (temperature)" = accuracy(informed, actual)[, c("ME", "RMSE", "MAPE")])
+```
+
+#### Python
+
+```{python p3-py}
+from statsforecast.models import AutoETS
+
+elec = fpp.load("elecdaily")
+train, test = elec.iloc[:300], elec.iloc[300:]
+h = len(test)
+m = AutoETS(season_length=7).fit(train["Demand"].to_numpy())
+fc = m.predict(h=h)["mean"]
+err = train["Demand"].to_numpy() - m.predict_in_sample()["fitted"]
+adj_model = smf.ols("err ~ Temperature + I(Temperature**2) + WorkDay",
+                    data=train.assign(err=err)).fit()
+informed = fc + adj_model.predict(test).to_numpy()
+actual = test["Demand"]
+cols = ["ME", "RMSE", "MAPE"]
+pd.DataFrame({"(a) no adjustment": fpp.accuracy(fc, actual).loc["Test set", cols],
+              "(b) +2% uninformed": fpp.accuracy(fc * 1.02, actual).loc["Test set", cols],
+              "(c) informed (temperature)": fpp.accuracy(informed, actual).loc["Test set", cols]}).T.round(3)
+```
+
+**Answer.** The informed adjustment brings in genuinely new information (temperature): it removes
+almost all of the bias and lowers the RMSE by about 9%. The blanket +2% "feel-good" adjustment uses
+no information and makes every measure worse. This is the chapter's rule: adjust only when you have important extra
+information that the model does not use — and in that case it is usually better still to put the
+information *into* the model (a mixed model, Chapters 5 and 9).
+
+# Practice 4 — Questions about the TFC process (discussion)
+
+*The book closes Section 4.7 with questions about the TFC. My answers:*
+
+1. **Forecasts or targets?** The steady upward path, even through falling data, looks like a
+   *desired* outcome for an industry body — the forecasts may have drifted toward targets.
+2. **Segregation?** The second-round committee is made of industry and government stakeholders who
+   *use* (and benefit from) optimistic numbers — forecasters and users were not well segregated.
+3. **Improving the iterations?** Make the rounds Delphi-like: anonymous adjustments with written
+   justifications, and feedback showing each round's track record (Practice 2's errors).
+4. **Meeting dynamics?** Consensus meetings promote optimism and overconfidence; independent
+   individual adjustments averaged afterwards would reduce this.
+5. **Order of the agenda?** Domestic tourism was a large, important series; it should be reviewed
+   early, before fatigue sets in.
+6. **Evaluation?** Publish an annual review of past forecasts against outcomes — the
+   "systematically evaluate" principle of Section 4.2.
+
+*(Discussion exercise — no code required.)*
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*
