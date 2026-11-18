@@ -1,0 +1,1241 @@
+---
+title: "Chapter 5 — Time series regression models"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+import fpp_ch05 as c5          # tslm(), forecast_lm(), CV(), fourier(), easter(), splinef() ...
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+# Only show real results: hide the matplotlib objects that plotting calls return
+def _quiet_displayhook(value, _orig=sys.displayhook):
+    import matplotlib.artist
+    items = value if isinstance(value, (list, tuple, np.ndarray)) else [value]
+    if len(items) and all(isinstance(i, matplotlib.artist.Artist) for i in np.ravel(np.asarray(items, dtype=object))):
+        return
+    _orig(value)
+sys.displayhook = _quiet_displayhook
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 5** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and exercises are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+>
+> **Python note.** `python/fpp_ch05.py` rebuilds exactly the predictors `tslm()` creates
+> (`trend`, `season`, `fourier()`), plus `forecast.lm()`, `CV()`, `easter()`, `bgtest()` and
+> `splinef()`, so the Python coefficients match R to machine precision (checked in `tests/`).
+
+# Learning goals
+
+* Fit and interpret simple and multiple linear regressions for time series (`tslm()`).
+* Check the assumptions with residual diagnostics, including the Breusch–Godfrey test.
+* Build useful predictors: trend, dummies, seasonal dummies, interventions, trading days,
+  distributed lags, Easter and Fourier terms.
+* Select predictors with CV, AIC, AICc, BIC and adjusted R².
+* Produce ex-ante, ex-post and scenario forecasts with prediction intervals.
+* Use the matrix formulation, and nonlinear (piecewise, spline) trends.
+* Separate correlation, causation, confounding and multicollinearity.
+
+The forecast variable $y$ is assumed to have a **linear relationship** with predictor series $x$.
+The book always says *forecast variable* (not dependent/regressand) and *predictor variables*.
+
+# 5.1 The linear model
+
+**Simple linear regression:** $y_t = \beta_0 + \beta_1 x_t + \varepsilon_t$. $\beta_0$ is the
+intercept (predicted $y$ when $x=0$), $\beta_1$ the slope (average change in $y$ for a one-unit
+increase in $x$). The error $\varepsilon_t$ is not a "mistake" — it is everything other than $x_t$
+that moves $y_t$.
+
+### US consumption and income (Figures 5.2–5.3) {.tabset .tabset-pills}
+
+#### R
+
+```{r uschange-plot}
+autoplot(uschange[, c("Consumption", "Income")]) + ylab("% change") + xlab("Year")
+uschange %>% as.data.frame() %>%
+  ggplot(aes(x = Income, y = Consumption)) +
+  ylab("Consumption (quarterly % change)") + xlab("Income (quarterly % change)") +
+  geom_point() + geom_smooth(method = "lm", se = FALSE)
+tslm(Consumption ~ Income, data = uschange)
+```
+
+#### Python
+
+```{python uschange-plot-py}
+import seaborn as sns
+import statsmodels.formula.api as smf
+
+us = fpp.load("uschange")
+ax_ = fpp.autoplot(us[["Consumption", "Income"]], xlab="Year", ylab="% change"); plt.show()
+ax = sns.regplot(data=us, x="Income", y="Consumption", ci=None, scatter_kws={"s": 12})
+ax.set_xlabel("Income (quarterly % change)"); ax.set_ylabel("Consumption (quarterly % change)"); plt.show()
+fit_cons = smf.ols("Consumption ~ Income", data=us).fit()
+fit_cons.params
+```
+
+A one-percentage-point rise in income growth goes with about 0.28 points more consumption
+growth on average; with no income change, consumption still grows about 0.55% per quarter.
+Keep the intercept unless there is a strong reason to force the line through the origin.
+
+**Multiple regression:** $y_t = \beta_0 + \beta_1 x_{1,t} + \dots + \beta_k x_{k,t} + \varepsilon_t$.
+Each coefficient is a **marginal effect** — the effect of that predictor after accounting for all
+the others.
+
+### More predictors and the scatterplot matrix (Figures 5.4–5.5) {.tabset .tabset-pills}
+
+#### R
+
+```{r uschange-pairs, fig.height=7}
+autoplot(uschange[, 3:5], facets = TRUE, colour = TRUE) + ylab("") + xlab("Year") + guides(colour = "none")
+uschange %>% as.data.frame() %>% GGally::ggpairs()
+```
+
+#### Python
+
+```{python uschange-pairs-py}
+ax_ = fpp.autoplot(us[["Production", "Savings", "Unemployment"]], facets=True, xlab="Year"); plt.show()
+g = sns.pairplot(us, corner=False, plot_kws={"s": 8}, diag_kind="kde", height=1.6)
+for i, a in enumerate(us.columns):          # add correlations in the upper triangle (like ggpairs)
+    for j, b in enumerate(us.columns):
+        if j > i:
+            g.axes[i, j].clear()
+            g.axes[i, j].text(0.5, 0.5, f"Corr:\n{us[a].corr(us[b]):.3f}", ha="center", va="center",
+                              transform=g.axes[i, j].transAxes)
+plt.show()
+```
+
+**Assumptions.** The model is a reasonable approximation of reality, and the errors
+(1) have **mean zero** (else forecasts are biased), (2) are **not autocorrelated** (else
+forecasts are inefficient), (3) are **unrelated to the predictors** (else there is more to model).
+Normal errors with constant variance make prediction intervals easy. Each $x$ is treated as
+**not random** (observed, not controlled).
+
+# 5.2 Least squares estimation
+
+Choose $\beta_0,\dots,\beta_k$ to **minimise the sum of squared errors**
+$\sum_t (y_t - \beta_0 - \beta_1 x_{1,t} - \dots - \beta_k x_{k,t})^2$ — "fitting", "training"
+or "learning" the model. `tslm()` is `lm()` plus time-series conveniences.
+
+### The multiple regression for US consumption {.tabset .tabset-pills}
+
+#### R
+
+```{r consMR}
+fit.consMR <- tslm(Consumption ~ Income + Production + Unemployment + Savings, data = uschange)
+summary(fit.consMR)
+```
+
+#### Python
+
+```{python consMR-py}
+fit_consMR = smf.ols("Consumption ~ Income + Production + Unemployment + Savings", data=us).fit()
+print(fit_consMR.summary().tables[1])
+print(f"Residual standard error: {np.sqrt(fit_consMR.scale):.4f} on {int(fit_consMR.df_resid)} df;"
+      f" R-squared: {fit_consMR.rsquared:.4f}, adjusted: {fit_consMR.rsquared_adj:.4f}")
+```
+
+The *standard error* of a coefficient measures its uncertainty; t-values and p-values matter
+little for forecasting.
+
+**Fitted values** $\hat y_t$ plug the observed predictors into the fitted equation — predictions
+of the *training* data, not genuine forecasts.
+
+### Fitted vs. actual (Figures 5.6–5.7) {.tabset .tabset-pills}
+
+#### R
+
+```{r consMR-fitted}
+autoplot(uschange[, "Consumption"], series = "Data") +
+  autolayer(fitted(fit.consMR), series = "Fitted") +
+  xlab("Year") + ylab("") + ggtitle("Percent change in US consumption expenditure") +
+  guides(colour = guide_legend(title = " "))
+cbind(Data = uschange[, "Consumption"], Fitted = fitted(fit.consMR)) %>% as.data.frame() %>%
+  ggplot(aes(x = Data, y = Fitted)) + geom_point() +
+  ylab("Fitted (predicted values)") + xlab("Data (actual values)") +
+  ggtitle("Percent change in US consumption expenditure") + geom_abline(intercept = 0, slope = 1)
+```
+
+#### Python
+
+```{python consMR-fitted-py}
+t = fpp.ts_time(us)
+fig, ax = plt.subplots()
+ax.plot(t, us["Consumption"], label="Data"); ax.plot(t, fit_consMR.fittedvalues, label="Fitted")
+ax.set_title("Percent change in US consumption expenditure"); ax.set_xlabel("Year"); ax.legend(); plt.show()
+fig, ax = plt.subplots(figsize=(5.5, 5))
+ax.scatter(us["Consumption"], fit_consMR.fittedvalues, s=10)
+lim = [us["Consumption"].min(), us["Consumption"].max()]
+ax.plot(lim, lim, color="black"); ax.set_xlabel("Data (actual values)"); ax.set_ylabel("Fitted (predicted values)")
+ax.set_title("Percent change in US consumption expenditure"); plt.show()
+```
+
+**Goodness of fit.** $R^2 = \sum(\hat y_t-\bar y)^2/\sum(y_t-\bar y)^2$ (= squared correlation
+of $y$ and $\hat y$) — the share of variation explained. It never falls when a predictor is added,
+so it encourages over-fitting; test-set accuracy is far better evidence. Here $R^2=0.754$ vs. 0.16
+for income alone.
+
+**Standard error of the regression** $\hat\sigma_e=\sqrt{\frac{1}{T-k-1}\sum e_t^2}$ (0.329 here):
+the typical size of an error, used for prediction intervals.
+
+### R², correlation and the residual standard error by hand {.tabset .tabset-pills}
+
+#### R
+
+```{r gof}
+yhat <- fitted(fit.consMR); y <- uschange[, "Consumption"]
+c(R2 = cor(y, yhat)^2, R2_formula = sum((yhat - mean(y))^2) / sum((y - mean(y))^2),
+  sigma = sqrt(sum(residuals(fit.consMR)^2) / (length(y) - 4 - 1)),
+  R2_income_only = summary(tslm(Consumption ~ Income, data = uschange))$r.squared)
+```
+
+#### Python
+
+```{python gof-py}
+y, yhat = us["Consumption"].to_numpy(), fit_consMR.fittedvalues.to_numpy()
+{"R2": np.corrcoef(y, yhat)[0, 1] ** 2,
+ "R2_formula": np.sum((yhat - y.mean()) ** 2) / np.sum((y - y.mean()) ** 2),
+ "sigma": np.sqrt(np.sum(fit_consMR.resid ** 2) / (len(y) - 4 - 1)),
+ "R2_income_only": fit_cons.rsquared}
+```
+
+# 5.3 Evaluating the regression model
+
+Residuals $e_t = y_t - \hat y_t$ sum to zero and are uncorrelated with every predictor
+(when an intercept is included). After fitting, always check:
+
+* **ACF of residuals** — autocorrelation means information is left over: forecasts are still
+  unbiased but inefficient, and intervals too wide. The **Breusch–Godfrey (LM) test** checks
+  autocorrelation up to a chosen order jointly (designed for regressions; small p-value = problem).
+* **Histogram of residuals** — normality is not essential but simplifies prediction intervals.
+
+### Residual diagnostics with the Breusch–Godfrey test (Figure 5.8) {.tabset .tabset-pills}
+
+#### R
+
+```{r consMR-resid}
+checkresiduals(fit.consMR)
+```
+
+#### Python
+
+```{python consMR-resid-py}
+fit_consMR_c5 = c5.tslm(us["Consumption"], X=us[["Income", "Production", "Unemployment", "Savings"]])
+ax_ = c5.checkresiduals_lm(fit_consMR_c5)
+```
+
+Some changing variance and slight skewness (intervals may be a little off); a spike at lag 7
+but the BG test is not significant at 5% (p ≈ 0.06). Dynamic regression (Chapter 9) handles
+leftover autocorrelation.
+
+**Residuals vs. predictors** — patterns suggest a nonlinear relationship; also plot residuals
+against predictors *not* in the model. **Residuals vs. fitted values** — a pattern suggests
+heteroscedasticity (try a log or square-root transformation).
+
+### Residuals against predictors and fitted values (Figures 5.9–5.10) {.tabset .tabset-pills}
+
+#### R
+
+```{r resid-plots, fig.height=6}
+df <- as.data.frame(uschange)
+df[, "Residuals"] <- as.numeric(residuals(fit.consMR))
+p1 <- ggplot(df, aes(x = Income, y = Residuals)) + geom_point()
+p2 <- ggplot(df, aes(x = Production, y = Residuals)) + geom_point()
+p3 <- ggplot(df, aes(x = Savings, y = Residuals)) + geom_point()
+p4 <- ggplot(df, aes(x = Unemployment, y = Residuals)) + geom_point()
+gridExtra::grid.arrange(p1, p2, p3, p4, nrow = 2)
+cbind(Fitted = fitted(fit.consMR), Residuals = residuals(fit.consMR)) %>% as.data.frame() %>%
+  ggplot(aes(x = Fitted, y = Residuals)) + geom_point()
+```
+
+#### Python
+
+```{python resid-plots-py}
+fig, axes = plt.subplots(2, 2, figsize=(8, 6))
+for a, col in zip(axes.ravel(), ["Income", "Production", "Savings", "Unemployment"]):
+    a.scatter(us[col], fit_consMR.resid, s=8); a.set_xlabel(col); a.set_ylabel("Residuals")
+plt.tight_layout(); plt.show()
+fig, ax = plt.subplots()
+ax.scatter(fit_consMR.fittedvalues, fit_consMR.resid, s=8); ax.set_xlabel("Fitted"); ax.set_ylabel("Residuals")
+plt.show()
+```
+
+**Outliers and influential observations.** Outliers are extreme observations; *influential*
+observations change the coefficients a lot — usually outliers that are extreme in the $x$
+direction. Check data-entry errors (fix or remove), otherwise study the cause and report results
+with and without them.
+
+### One bad data point (Figure 5.11, my reconstruction) {.tabset .tabset-pills}
+
+Add one wrong observation to the consumption–income data: consumption −4% at an average income
+change (left: outlier in *y* only) and consumption −4% at a 6% income rise (right: also extreme in *x*).
+
+#### R
+
+```{r outliers}
+base <- as.data.frame(uschange[, c("Income", "Consumption")])
+left  <- rbind(base, data.frame(Income = mean(base$Income), Consumption = -4))
+right <- rbind(base, data.frame(Income = 6, Consumption = -4))
+coefs <- rbind(clean = coef(lm(Consumption ~ Income, base)),
+               outlier_in_y = coef(lm(Consumption ~ Income, left)),
+               influential  = coef(lm(Consumption ~ Income, right)))
+round(coefs, 3)
+pl <- function(d, title) ggplot(d, aes(Income, Consumption)) + geom_point() +
+  geom_abline(intercept = coefs[1, 1], slope = coefs[1, 2]) +
+  geom_smooth(method = "lm", se = FALSE, colour = "red") + ggtitle(title)
+gridExtra::grid.arrange(pl(left, "Outlier in y only"), pl(right, "Influential observation"), ncol = 2)
+```
+
+#### Python
+
+```{python outliers-py}
+base = us[["Income", "Consumption"]].reset_index(drop=True)
+left = pd.concat([base, pd.DataFrame({"Income": [base.Income.mean()], "Consumption": [-4]})], ignore_index=True)
+right = pd.concat([base, pd.DataFrame({"Income": [6], "Consumption": [-4]})], ignore_index=True)
+coefs = pd.DataFrame({k: smf.ols("Consumption ~ Income", d).fit().params
+                      for k, d in {"clean": base, "outlier_in_y": left, "influential": right}.items()}).T
+print(coefs.round(3))
+fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+for a, d, ttl, key in [(axes[0], left, "Outlier in y only", "outlier_in_y"),
+                       (axes[1], right, "Influential observation", "influential")]:
+    a.scatter(d.Income, d.Consumption, s=8)
+    xs = np.linspace(d.Income.min(), d.Income.max(), 50)
+    a.plot(xs, coefs.loc["clean", "Intercept"] + coefs.loc["clean", "Income"] * xs, color="black")
+    a.plot(xs, coefs.loc[key, "Intercept"] + coefs.loc[key, "Income"] * xs, color="red")
+    a.set_title(ttl); a.set_xlabel("Income")
+plt.tight_layout(); plt.show()
+```
+
+**Spurious regression.** Non-stationary series (Chapter 8) that both trend can *look* related —
+Australian air passengers and rice production in Guinea. Signs: **very high R²** and **strongly
+autocorrelated residuals**. Such models may forecast acceptably for a short while but will fail.
+
+### Air passengers "explained" by Guinean rice (Figures 5.12–5.13) {.tabset .tabset-pills}
+
+#### R
+
+```{r spurious}
+aussies <- window(ausair, end = 2011)
+fit <- tslm(aussies ~ guinearice)
+summary(fit)
+checkresiduals(fit)
+```
+
+#### Python
+
+```{python spurious-py}
+ausair = fpp.load("ausair"); guinearice = fpp.load("guinearice")
+aussies = fpp.window(ausair, end=2011)
+fit_sp = c5.tslm(aussies, X=pd.DataFrame({"guinearice": guinearice.to_numpy()}))
+print(fit_sp.params.round(3)); print(f"R-squared: {fit_sp.res.rsquared:.3f}")
+ax_ = c5.checkresiduals_lm(fit_sp)
+```
+
+# 5.4 Some useful predictors
+
+* **Trend** $x_t = t$: `trend` in `tslm()`.
+* **Dummy variables** (0/1) for yes/no predictors (public holiday?), or to remove the effect of an
+  outlier / special event (e.g. Rio 2016 Olympics for Brazilian arrivals).
+* **More than two categories** → one fewer dummy than categories (Sunday is captured by the intercept
+  in a day-of-week coding). Adding the last one is the **dummy variable trap** — the regression fails.
+  Each dummy's coefficient is the effect relative to the omitted category. `season` in `tslm()` does this.
+
+### Day-of-week dummies (the coding table) {.tabset .tabset-pills}
+
+#### R
+
+```{r dow-dummies}
+day <- factor(rep(c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"),
+                  length.out = 8),
+              levels = c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"))
+X <- model.matrix(~ day)[, -1]
+colnames(X) <- paste0("d", 1:6)
+data.frame(day = as.character(day), X)
+```
+
+#### Python
+
+```{python dow-dummies-py}
+days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+day = pd.Categorical(np.resize(days, 8), categories=["Sunday"] + days[:6])
+X = pd.get_dummies(day, drop_first=True).astype(int)
+X.columns = [f"d{i}" for i in range(1, 7)]
+X.insert(0, "day", np.resize(days, 8)); X
+```
+
+### Seasonal dummies: Australian beer production (Figures 5.14–5.16) {.tabset .tabset-pills}
+
+$y_t = \beta_0 + \beta_1 t + \beta_2 d_{2,t} + \beta_3 d_{3,t} + \beta_4 d_{4,t} + \varepsilon_t$, quarter 1 omitted.
+
+#### R
+
+```{r beer-season}
+beer2 <- window(ausbeer, start = 1992)
+autoplot(beer2) + xlab("Year") + ylab("Megalitres")
+fit.beer <- tslm(beer2 ~ trend + season)
+summary(fit.beer)
+autoplot(beer2, series = "Data") + autolayer(fitted(fit.beer), series = "Fitted") +
+  xlab("Year") + ylab("Megalitres") + ggtitle("Quarterly Beer Production")
+cbind(Data = beer2, Fitted = fitted(fit.beer)) %>% as.data.frame() %>%
+  ggplot(aes(x = Data, y = Fitted, colour = as.factor(cycle(beer2)))) + geom_point() +
+  ylab("Fitted") + xlab("Actual values") + ggtitle("Quarterly beer production") +
+  scale_colour_brewer(palette = "Dark2", name = "Quarter") + geom_abline(intercept = 0, slope = 1)
+```
+
+#### Python
+
+```{python beer-season-py}
+beer2 = fpp.window(fpp.load("ausbeer"), start=1992)
+fit_beer = c5.tslm(beer2, trend_=True, season=True)
+print(fit_beer.res.summary().tables[1])
+t = fpp.ts_time(beer2)
+fig, ax = plt.subplots()
+ax.plot(t, beer2, label="Data"); ax.plot(t, fit_beer.fitted, label="Fitted")
+ax.set_title("Quarterly Beer Production"); ax.set_ylabel("Megalitres"); ax.legend(); plt.show()
+q = np.asarray(beer2.attrs["cycle"])
+fig, ax = plt.subplots(figsize=(6, 5))
+for k in range(1, 5):
+    ax.scatter(beer2[q == k], fit_beer.fitted[q == k], s=14, label=str(k))
+lim = [beer2.min(), beer2.max()]; ax.plot(lim, lim, color="black")
+ax.legend(title="Quarter"); ax.set_xlabel("Actual values"); ax.set_ylabel("Fitted"); plt.show()
+```
+
+Trend −0.34 ML per quarter; Q2 is 34.7 ML below Q1, Q3 17.8 ML below, Q4 72.8 ML above.
+
+**Intervention variables.** A **spike** dummy (1 in one period) for a one-off effect; a **step**
+dummy (0 before, 1 from the intervention on) for a permanent level shift; a **change of slope** via a
+piecewise trend (Section 5.8).
+
+### My example: the 1983 UK seat-belt law as a step intervention {.tabset .tabset-pills}
+
+`Seatbelts` (base R) records monthly UK car drivers killed or seriously injured; wearing seat belts
+became compulsory on 31 January 1983 (`law` = step dummy). I also add a **spike** for the largest
+remaining outlier month.
+
+#### R
+
+```{r intervention}
+drivers <- Seatbelts[, "drivers"]; law <- Seatbelts[, "law"]
+fit.step <- tslm(drivers ~ trend + season + law)
+spike <- as.numeric(seq_along(drivers) == which.max(abs(residuals(fit.step))))
+fit.spike <- tslm(drivers ~ trend + season + law + spike)
+round(rbind(step_only = coef(fit.step)[c("trend", "law")],
+            step_and_spike = coef(fit.spike)[c("trend", "law")]), 2)
+time(drivers)[spike == 1]
+autoplot(drivers, series = "Data") + autolayer(fitted(fit.spike), series = "Fitted") +
+  ggtitle("UK drivers killed or seriously injured") + ylab("Drivers") + guides(colour = guide_legend(title = NULL))
+```
+
+#### Python
+
+```{python intervention-py}
+sb = fpp.load("Seatbelts")
+drivers = sb["drivers"]; drivers.attrs = dict(sb.attrs)
+fit_step = c5.tslm(drivers, trend_=True, season=True, X=sb[["law"]])
+spike = (np.arange(len(drivers)) == np.argmax(np.abs(fit_step.residuals.to_numpy()))).astype(float)
+fit_spike = c5.tslm(drivers, trend_=True, season=True, X=pd.DataFrame({"law": sb["law"].to_numpy(), "spike": spike}))
+print(pd.DataFrame({"step_only": fit_step.params[["trend", "law"]],
+                    "step_and_spike": fit_spike.params[["trend", "law"]]}).T.round(2))
+print("spike at", fpp.ts_time(drivers)[spike == 1])
+fig, ax = plt.subplots()
+ax.plot(fpp.ts_time(drivers), drivers, label="Data"); ax.plot(fpp.ts_time(drivers), fit_spike.fitted, label="Fitted")
+ax.set_title("UK drivers killed or seriously injured"); ax.legend(); plt.show()
+```
+
+The law shifted the level down by about 300 drivers per month.
+
+**Trading days.** Monthly sales depend on how many trading days a month has — use `bizdays()`
+(monthly/quarterly), or the counts of each weekday (Mondays, …, Sundays) as seven predictors.
+
+### Counting trading days {.tabset .tabset-pills}
+
+R's `bizdays()` uses a financial-centre holiday calendar; the weekday counts are calendar facts and
+match exactly in Python.
+
+#### R
+
+```{r tradingdays}
+x <- window(a10, start = c(2007, 1), end = c(2007, 12))
+weekday_counts <- t(sapply(seq_along(x), function(i) {
+  d1 <- as.Date(sprintf("2007-%02d-01", i)); d <- seq(d1, by = "day", length.out = monthdays(x)[i])
+  table(factor(weekdays(d), levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                                       "Saturday", "Sunday")))
+}))
+data.frame(month = month.abb, weekday_counts, bizdays_NY = as.numeric(bizdays(x, FinCenter = "New York")))
+```
+
+#### Python
+
+```{python tradingdays-py}
+months = pd.period_range("2007-01", "2007-12", freq="M")
+names = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+rows = []
+for p in months:
+    d = pd.date_range(p.start_time, p.end_time.normalize(), freq="D")
+    rows.append({n: int((d.dayofweek == i).sum()) for i, n in enumerate(names)})
+tdays = pd.DataFrame(rows, index=months.strftime("%b"))
+tdays["weekdays (no holidays)"] = [np.busday_count(p.start_time.date(), (p.end_time + pd.Timedelta(days=1)).date())
+                                   for p in months]
+tdays
+```
+
+**Distributed lags.** Advertising works beyond the campaign, so include advertising this month,
+last month, two months ago … (coefficients usually decline with the lag).
+
+### Distributed lags: insurance quotes and TV advertising {.tabset .tabset-pills}
+
+#### R
+
+```{r distributed-lags}
+adv <- cbind(AdLag0 = insurance[, "TV.advert"], AdLag1 = stats::lag(insurance[, "TV.advert"], -1),
+             AdLag2 = stats::lag(insurance[, "TV.advert"], -2))[1:40, ]
+fit.lags <- lm(insurance[, "Quotes"] ~ adv)
+round(coef(fit.lags), 4)
+```
+
+#### Python
+
+```{python distributed-lags-py}
+ins = fpp.load("insurance")
+dl = pd.DataFrame({"Quotes": ins["Quotes"], "AdLag0": ins["TV.advert"],
+                   "AdLag1": ins["TV.advert"].shift(1), "AdLag2": ins["TV.advert"].shift(2)})
+fit_lags = smf.ols("Quotes ~ AdLag0 + AdLag1 + AdLag2", data=dl).fit()
+fit_lags.params.round(4)
+```
+
+**Easter** moves between March and April (Q1/Q2) and lasts several days: a dummy equal to the
+proportion of the holiday falling in each period — `easter()`.
+
+### The Easter dummy {.tabset .tabset-pills}
+
+#### R
+
+```{r easter}
+head(window(easter(ausbeer), start = 1992), 12)
+```
+
+#### Python
+
+```{python easter-py}
+c5.easter(fpp.window(fpp.load("ausbeer"), start=1992)).head(12)
+```
+
+**Fourier series.** For seasonal period $m$, the terms
+$\sin(2\pi kt/m),\ \cos(2\pi kt/m)$, $k=1,2,\dots$ approximate any periodic pattern. Using all
+$m-1$ of them reproduces the seasonal dummies exactly; using a few ($K$ pairs) gives a smooth
+seasonal pattern with fewer parameters — ideal for long periods (weekly data, $m≈52$). A regression
+with Fourier terms is a **harmonic regression**. Maximum $K = m/2$.
+
+### Harmonic regression for beer (K = 2 equals the dummies) {.tabset .tabset-pills}
+
+#### R
+
+```{r fourier-beer}
+fourier.beer <- tslm(beer2 ~ trend + fourier(beer2, K = 2))
+summary(fourier.beer)
+all.equal(fitted(fourier.beer), fitted(fit.beer))
+```
+
+#### Python
+
+```{python fourier-beer-py}
+fourier_beer = c5.tslm(beer2, trend_=True, K=2)
+print(fourier_beer.res.summary().tables[1])
+np.allclose(fourier_beer.fitted, fit_beer.fitted)
+```
+
+# 5.5 Selecting predictors
+
+Do **not** drop predictors because a scatterplot looks flat, or because p > 0.05 (significance ≠
+predictive value; correlated predictors distort p-values). Use a measure of **predictive accuracy**:
+
+| Measure | Formula | Choose |
+|---|---|---|
+| Adjusted $\bar R^2$ | $1-(1-R^2)\frac{T-1}{T-k-1}$ | max (tends to pick too many) |
+| CV (leave-one-out) | $\frac1T\sum [e_t/(1-h_t)]^2$ (fast, via the hat matrix) | min |
+| AIC | $T\log(SSE/T)+2(k+2)$ | min |
+| AICc | $AIC + \frac{2(k+2)(k+3)}{T-k-3}$ | min (book's default) |
+| BIC | $T\log(SSE/T)+(k+2)\log T$ | min (picks fewer terms) |
+
+### CV() for the consumption model {.tabset .tabset-pills}
+
+#### R
+
+```{r cv-consMR}
+CV(fit.consMR)
+```
+
+#### Python
+
+```{python cv-consMR-py}
+c5.CV(fit_consMR)
+```
+
+### All 16 subsets of the four predictors (Table 5.1) {.tabset .tabset-pills}
+
+#### R
+
+```{r best-subsets}
+preds <- c("Income", "Production", "Savings", "Unemployment")
+grid <- expand.grid(rep(list(0:1), 4)); colnames(grid) <- preds
+tab <- t(apply(grid, 1, function(g) {
+  rhs <- if (sum(g) == 0) "1" else paste(preds[g == 1], collapse = " + ")
+  CV(tslm(as.formula(paste("Consumption ~", rhs)), data = uschange))
+}))
+best <- cbind(grid, round(tab, 3))
+best[order(best$AICc), ]
+```
+
+#### Python
+
+```{python best-subsets-py}
+import itertools
+preds = ["Income", "Production", "Savings", "Unemployment"]
+rows = []
+for g in itertools.product([0, 1], repeat=4):
+    rhs = " + ".join(p for p, use in zip(preds, g) if use) or "1"
+    rows.append({**dict(zip(preds, g)), **c5.CV(smf.ols(f"Consumption ~ {rhs}", data=us).fit()).round(3)})
+pd.DataFrame(rows).sort_values("AICc").reset_index(drop=True)
+```
+
+All four predictors give the lowest AICc, but Income and Savings matter most (big gap after the
+fourth row), and dropping Production costs almost nothing (it is highly correlated with Unemployment).
+
+**Best subsets** = fit all models (as above). With many predictors (40 → over a trillion models) use
+**backwards stepwise** regression: start with all, drop one at a time while the criterion improves;
+or **forward** stepwise; or hybrids. Stepwise gives a good model, not necessarily the best.
+**Beware inference after selection**: p-values are invalid once predictors were chosen from the data.
+
+### Backwards stepwise selection by AICc {.tabset .tabset-pills}
+
+#### R
+
+```{r stepwise}
+backward <- function(vars) {
+  crit <- function(v) CV(tslm(as.formula(paste("Consumption ~", if (length(v)) paste(v, collapse = "+") else "1")),
+                             data = uschange))["AICc"]
+  current <- crit(vars)
+  repeat {
+    if (!length(vars)) break
+    trial <- sapply(vars, function(v) crit(setdiff(vars, v)))
+    if (min(trial) >= current) break
+    vars <- setdiff(vars, names(trial)[which.min(trial)]); current <- min(trial)
+  }
+  list(selected = vars, AICc = unname(current))
+}
+backward(preds)
+```
+
+#### Python
+
+```{python stepwise-py}
+def backward(vars_):
+    crit = lambda v: c5.CV(smf.ols("Consumption ~ " + ("+".join(v) or "1"), data=us).fit())["AICc"]
+    current = crit(vars_)
+    while vars_:
+        trial = {v: crit([w for w in vars_ if w != v]) for v in vars_}
+        best = min(trial, key=trial.get)
+        if trial[best] >= current:
+            break
+        vars_ = [w for w in vars_ if w != best]; current = trial[best]
+    return {"selected": vars_, "AICc": current}
+backward(preds)
+```
+
+# 5.6 Forecasting with regression
+
+* **Ex-ante** forecasts use only information available in advance — so the predictors themselves
+  must be forecast (simple methods, Chapters 7–8, or official forecasts).
+* **Ex-post** forecasts use the *actual* later values of the predictors (but never of $y$) — not
+  genuine forecasts, but they separate errors due to the model from errors due to forecasting the predictors.
+* Calendar predictors (trend, season, holidays) are known in advance → ex-ante = ex-post.
+
+### Forecasting beer production (Figure 5.17) {.tabset .tabset-pills}
+
+#### R
+
+```{r beer-fc}
+fcast <- forecast(fit.beer)
+autoplot(fcast) + ggtitle("Forecasts of beer production using regression") + xlab("Year") + ylab("megalitres")
+fcast
+```
+
+#### Python
+
+```{python beer-fc-py}
+fcast = c5.forecast_lm(fit_beer)
+fpp.plot_forecast(fcast, title="Forecasts of beer production using regression", ylab="megalitres"); plt.show()
+fcast.summary()
+```
+
+**Scenario based forecasting.** Assume paths for the predictors (e.g. income +1%, savings +0.5%,
+no unemployment change, versus −1%/−0.5%). The intervals **ignore** the uncertainty in those assumed paths.
+
+### Two scenarios for US consumption (Figure 5.18) {.tabset .tabset-pills}
+
+#### R
+
+```{r scenarios}
+fit.consBest <- tslm(Consumption ~ Income + Savings + Unemployment, data = uschange)
+h <- 4
+newdata <- data.frame(Income = c(1, 1, 1, 1), Savings = c(0.5, 0.5, 0.5, 0.5), Unemployment = c(0, 0, 0, 0))
+fcast.up <- forecast(fit.consBest, newdata = newdata)
+newdata <- data.frame(Income = rep(-1, h), Savings = rep(-0.5, h), Unemployment = rep(0, h))
+fcast.down <- forecast(fit.consBest, newdata = newdata)
+autoplot(uschange[, 1]) + ylab("% change in US consumption") +
+  autolayer(fcast.up, PI = TRUE, series = "increase") +
+  autolayer(fcast.down, PI = TRUE, series = "decrease") +
+  guides(colour = guide_legend(title = "Scenario"))
+rbind(increase = fcast.up$mean[1], decrease = fcast.down$mean[1])
+```
+
+#### Python
+
+```{python scenarios-py}
+y_cons = us["Consumption"]; y_cons.attrs = dict(us.attrs)
+fit_consBest = c5.tslm(y_cons, X=us[["Income", "Savings", "Unemployment"]])
+h = 4
+up = c5.forecast_lm(fit_consBest, newdata=pd.DataFrame({"Income": [1.0] * h, "Savings": [0.5] * h, "Unemployment": [0.0] * h}))
+down = c5.forecast_lm(fit_consBest, newdata=pd.DataFrame({"Income": [-1.0] * h, "Savings": [-0.5] * h, "Unemployment": [0.0] * h}))
+fig, ax = plt.subplots()
+ax.plot(fpp.ts_time(y_cons), y_cons, color="black", lw=0.8)
+for fc, lab, col in [(up, "increase", "C0"), (down, "decrease", "C3")]:
+    tf = fpp.ts_time(pd.Series(fc.mean.to_numpy(), index=fc.mean.index).pipe(lambda s: (s.attrs.update(frequency=4) or s)))
+    ax.fill_between(tf, fc.lower[95], fc.upper[95], color=col, alpha=0.2)
+    ax.plot(tf, fc.mean, color=col, label=lab)
+ax.set_ylabel("% change in US consumption"); ax.legend(title="Scenario"); plt.show()
+{"increase": up.mean.iloc[0], "decrease": down.mean.iloc[0]}
+```
+
+**Building a predictive regression.** Needing future predictors is the big weakness for ex-ante
+forecasting. Alternative: use **lagged predictors** $y_{t+h} = \beta_0 + \beta_1 x_{1,t} + \dots + \varepsilon_{t+h}$
+— all predictor values are then known when forecasting $h$ steps ahead (and lagged effects are often realistic).
+
+### Lagged predictors make ex-ante forecasts possible {.tabset .tabset-pills}
+
+One-quarter-ahead model: consumption growth next quarter on this quarter's predictors.
+
+#### R
+
+```{r lagged}
+lagged <- data.frame(Cons_next = c(uschange[-1, "Consumption"], NA), uschange[, c("Income", "Savings", "Unemployment")])
+fit.lagged <- lm(Cons_next ~ Income + Savings + Unemployment, data = lagged)
+round(coef(fit.lagged), 4)
+predict(fit.lagged, newdata = tail(lagged, 1), interval = "prediction", level = 0.95)  # 2016 Q4, ex-ante
+```
+
+#### Python
+
+```{python lagged-py}
+lagged = us[["Income", "Savings", "Unemployment"]].assign(Cons_next=us["Consumption"].shift(-1))
+fit_lagged = smf.ols("Cons_next ~ Income + Savings + Unemployment", data=lagged).fit()
+print(fit_lagged.params.round(4))
+fit_lagged.get_prediction(lagged.tail(1)).summary_frame(alpha=0.05)[["mean", "obs_ci_lower", "obs_ci_upper"]]
+```
+
+**Prediction intervals.** For simple regression, approximately
+$\hat y \pm 1.96\,\hat\sigma_e\sqrt{1+\frac1T+\frac{(x-\bar x)^2}{(T-1)s_x^2}}$ (1.28 for 80%) — wider the
+further $x$ is from $\bar x$. R and Python use the exact $t$-based version.
+
+### Average vs. extreme income growth (Figure 5.19) {.tabset .tabset-pills}
+
+#### R
+
+```{r pi-simple}
+fit.cons <- tslm(Consumption ~ Income, data = uschange)
+h <- 4
+fcast.ave <- forecast(fit.cons, newdata = data.frame(Income = rep(mean(uschange[, "Income"]), h)))
+fcast.up  <- forecast(fit.cons, newdata = data.frame(Income = rep(5, h)))
+autoplot(uschange[, "Consumption"]) + ylab("% change in US consumption") +
+  autolayer(fcast.ave, series = "Average increase", PI = TRUE) +
+  autolayer(fcast.up, series = "Extreme increase", PI = TRUE) +
+  guides(colour = guide_legend(title = "Scenario"))
+fcast.ave$mean[1]; fcast.ave$lower[1, ]; fcast.ave$upper[1, ]
+# Equation (5.3) approximation:
+x <- uschange[, "Income"]; s <- summary(fit.cons)$sigma; T <- length(x)
+fcast.ave$mean[1] + c(-1, 1) * 1.96 * s * sqrt(1 + 1 / T + (mean(x) - mean(x))^2 / ((T - 1) * sd(x)^2))
+```
+
+#### Python
+
+```{python pi-simple-py}
+fit_cons_c5 = c5.tslm(y_cons, X=us[["Income"]])
+ave = c5.forecast_lm(fit_cons_c5, newdata=pd.DataFrame({"Income": [us["Income"].mean()] * 4}))
+ext = c5.forecast_lm(fit_cons_c5, newdata=pd.DataFrame({"Income": [5.0] * 4}))
+fig, ax = plt.subplots()
+ax.plot(fpp.ts_time(y_cons), y_cons, color="black", lw=0.8)
+for fc, lab, col in [(ave, "Average increase", "C0"), (ext, "Extreme increase", "C3")]:
+    tf = 2016.75 + np.arange(1, 5) / 4
+    ax.fill_between(tf, fc.lower[95], fc.upper[95], color=col, alpha=0.2)
+    ax.fill_between(tf, fc.lower[80], fc.upper[80], color=col, alpha=0.3)
+    ax.plot(tf, fc.mean, color=col, label=lab)
+ax.legend(title="Scenario"); ax.set_ylabel("% change in US consumption"); plt.show()
+print(ave.summary().iloc[0].round(4))
+x = us["Income"]; s = np.sqrt(fit_cons_c5.res.scale); T = len(x)
+ave.mean.iloc[0] + np.array([-1, 1]) * 1.96 * s * np.sqrt(1 + 1 / T)
+```
+
+With income growing at its historical mean (0.72%), consumption is forecast to grow 0.75% with a
+95% interval of about [−0.45, 1.94] and an 80% interval of [−0.03, 1.52] (Equation 5.3 gives almost the
+same 95% interval). *(The printed book quotes different numbers for this example; these are the values R
+computes from the `fpp2` data.)* At an extreme 5% income rise the intervals are visibly wider, because
+$x$ is far from $\bar x$.
+
+# 5.7 Matrix formulation
+
+*(Advanced, optional.)* $\boldsymbol y = \boldsymbol X\boldsymbol\beta + \boldsymbol\varepsilon$ with
+$\boldsymbol X$ the $T\times(k+1)$ matrix (first column ones). Then
+
+* $\hat{\boldsymbol\beta} = (\boldsymbol X'\boldsymbol X)^{-1}\boldsymbol X'\boldsymbol y$ (normal equation —
+  fails if $\boldsymbol X$ is not of full rank, e.g. the dummy-variable trap),
+* $\hat\sigma_e^2 = \frac{1}{T-k-1}(\boldsymbol y-\boldsymbol X\hat{\boldsymbol\beta})'(\boldsymbol y-\boldsymbol X\hat{\boldsymbol\beta})$,
+* fitted values $\hat{\boldsymbol y} = \boldsymbol H\boldsymbol y$ with hat matrix $\boldsymbol H=\boldsymbol X(\boldsymbol X'\boldsymbol X)^{-1}\boldsymbol X'$,
+  and $CV = \frac1T\sum[e_t/(1-h_t)]^2$ using its diagonal $h_t$ (no refitting needed),
+* forecast $\hat y = \boldsymbol x^*\hat{\boldsymbol\beta}$, variance $\hat\sigma_e^2[1+\boldsymbol x^*(\boldsymbol X'\boldsymbol X)^{-1}(\boldsymbol x^*)']$,
+  95% interval $\hat y \pm 1.96\,\hat\sigma_e\sqrt{1+\boldsymbol x^*(\boldsymbol X'\boldsymbol X)^{-1}(\boldsymbol x^*)'}$
+  (ignores uncertainty in $\boldsymbol x^*$).
+
+### Every formula computed by hand and checked {.tabset .tabset-pills}
+
+#### R
+
+```{r matrix}
+X <- cbind(1, as.matrix(uschange[, c("Income", "Production", "Unemployment", "Savings")]))
+y <- uschange[, "Consumption"]
+XtXi <- solve(t(X) %*% X)
+beta <- XtXi %*% t(X) %*% y
+e <- y - X %*% beta
+sigma2 <- sum(e^2) / (nrow(X) - ncol(X))
+H <- X %*% XtXi %*% t(X)
+cv <- mean((e / (1 - diag(H)))^2)
+xstar <- c(1, 1, 1, 0, 0.5)                        # one future set of predictor values
+yhat <- sum(xstar * beta); se <- sqrt(sigma2 * (1 + t(xstar) %*% XtXi %*% xstar))
+rbind(by_hand = c(beta, sigma2 = sigma2, CV = cv), tslm = c(coef(fit.consMR), summary(fit.consMR)$sigma^2, CV(fit.consMR)["CV"]))
+c(forecast = yhat, lo95 = yhat - 1.96 * se, hi95 = yhat + 1.96 * se)
+```
+
+#### Python
+
+```{python matrix-py}
+X = np.column_stack([np.ones(len(us)), us[["Income", "Production", "Unemployment", "Savings"]].to_numpy()])
+y = us["Consumption"].to_numpy()
+XtXi = np.linalg.inv(X.T @ X)
+beta = XtXi @ X.T @ y
+e = y - X @ beta
+sigma2 = e @ e / (X.shape[0] - X.shape[1])
+H = X @ XtXi @ X.T
+cv = np.mean((e / (1 - np.diag(H))) ** 2)
+xstar = np.array([1, 1, 1, 0, 0.5])
+yhat = xstar @ beta; se = np.sqrt(sigma2 * (1 + xstar @ XtXi @ xstar))
+print(pd.DataFrame({"by_hand": np.r_[beta, sigma2, cv],
+                    "statsmodels": np.r_[fit_consMR.params, fit_consMR.scale, c5.CV(fit_consMR)["CV"]]},
+                   index=["(Intercept)", "Income", "Production", "Unemployment", "Savings", "sigma2", "CV"]))
+{"forecast": yhat, "lo95": yhat - 1.96 * se, "hi95": yhat + 1.96 * se}
+```
+
+# 5.8 Nonlinear regression
+
+**Transformations** keep the model linear in the parameters: log-log
+$\log y = \beta_0+\beta_1\log x+\varepsilon$ — $\beta_1$ is an **elasticity** (% change in $y$ for a
+1% change in $x$); log-linear (log $y$ only); linear-log (log $x$ only). Use $\log(x+1)$ if $x$ has zeros.
+
+**Piecewise linear**: $x_1=x$, $x_2=(x-c)_+$ (0 if $x<c$) — the slope bends at the **knot** $c$.
+More knots → a **linear regression spline**. **Cubic regression splines** ($x, x^2, x^3, (x-c)_+^3,\dots$)
+are smooth and fit well but **extrapolate badly**.
+
+**Nonlinear trends.** Quadratic/higher-order trends extrapolate unrealistically — avoid. Better: a
+**piecewise linear trend** $x_{1,t}=t$, $x_{2,t}=(t-\tau)_+$; slope $\beta_1$ before $\tau$ and
+$\beta_1+\beta_2$ after.
+
+### Boston marathon: linear trend is inadequate (Figure 5.20) {.tabset .tabset-pills}
+
+#### R
+
+```{r marathon-linear}
+fit.lin <- tslm(marathon ~ trend)
+p1 <- autoplot(marathon) + autolayer(fitted(fit.lin)) + ylab("Winning times in minutes") + guides(colour = "none")
+p2 <- autoplot(residuals(fit.lin)) + ylab("Residuals from a linear trend")
+gridExtra::grid.arrange(p1, p2, ncol = 1)
+```
+
+#### Python
+
+```{python marathon-linear-py}
+marathon = fpp.load("marathon")
+fit_lin = c5.tslm(marathon, trend_=True)
+fig, ax = plt.subplots(2, 1, figsize=(8, 6), sharex=True)
+tm = fpp.ts_time(marathon)
+ax[0].plot(tm, marathon, color="black"); ax[0].plot(tm, fit_lin.fitted); ax[0].set_ylabel("Winning times in minutes")
+ax[1].plot(tm, fit_lin.residuals); ax[1].set_ylabel("Residuals from a linear trend"); plt.show()
+```
+
+### Linear, exponential, piecewise and cubic-spline trends (Figure 5.21) {.tabset .tabset-pills}
+
+Knots at 1940 and 1980 (chosen by eye — subjective knots risk over-fitting).
+
+#### R
+
+```{r marathon-trends}
+h <- 10
+fit.lin <- tslm(marathon ~ trend)
+fcasts.lin <- forecast(fit.lin, h = h)
+fit.exp <- tslm(marathon ~ trend, lambda = 0)
+fcasts.exp <- forecast(fit.exp, h = h)
+t <- time(marathon)
+t.break1 <- 1940; t.break2 <- 1980
+tb1 <- ts(pmax(0, t - t.break1), start = 1897)
+tb2 <- ts(pmax(0, t - t.break2), start = 1897)
+fit.pw <- tslm(marathon ~ t + tb1 + tb2)
+t.new <- t[length(t)] + seq(h)
+tb1.new <- tb1[length(tb1)] + seq(h)
+tb2.new <- tb2[length(tb2)] + seq(h)
+newdata <- cbind(t = t.new, tb1 = tb1.new, tb2 = tb2.new) %>% as.data.frame()
+fcasts.pw <- forecast(fit.pw, newdata = newdata)
+fit.spline <- tslm(marathon ~ t + I(t^2) + I(t^3) + I(tb1^3) + I(tb2^3))
+fcasts.spl <- forecast(fit.spline, newdata = newdata)
+autoplot(marathon) +
+  autolayer(fitted(fit.lin), series = "Linear") + autolayer(fitted(fit.exp), series = "Exponential") +
+  autolayer(fitted(fit.pw), series = "Piecewise") + autolayer(fitted(fit.spline), series = "Cubic Spline") +
+  autolayer(fcasts.pw, series = "Piecewise") + autolayer(fcasts.lin, series = "Linear", PI = FALSE) +
+  autolayer(fcasts.exp, series = "Exponential", PI = FALSE) + autolayer(fcasts.spl, series = "Cubic Spline", PI = FALSE) +
+  xlab("Year") + ylab("Winning times in minutes") + ggtitle("Boston Marathon") +
+  guides(colour = guide_legend(title = " "))
+```
+
+#### Python
+
+```{python marathon-trends-py}
+h = 10
+fc_lin = c5.forecast_lm(fit_lin, h=h)
+fit_exp = c5.tslm(marathon, trend_=True, lambda_=0)
+fc_exp = c5.forecast_lm(fit_exp, h=h)
+tb1, tb2 = np.maximum(0, tm - 1940), np.maximum(0, tm - 1980)
+Xpw = pd.DataFrame({"t": tm, "tb1": tb1, "tb2": tb2})
+fit_pw = c5.tslm(marathon, X=Xpw)
+new = pd.DataFrame({"t": tm[-1] + np.arange(1, h + 1), "tb1": tb1[-1] + np.arange(1, h + 1),
+                    "tb2": tb2[-1] + np.arange(1, h + 1)})
+fc_pw = c5.forecast_lm(fit_pw, newdata=new)
+spl = lambda d: pd.DataFrame({"t": d.t, "t2": d.t ** 2, "t3": d.t ** 3, "tb1_3": d.tb1 ** 3, "tb2_3": d.tb2 ** 3})
+fit_spline = c5.tslm(marathon, X=spl(Xpw))
+fc_spl = c5.forecast_lm(fit_spline, newdata=spl(new))
+fig, ax = plt.subplots(figsize=(8, 5))
+ax.plot(tm, marathon, color="black", lw=0.8)
+tf = tm[-1] + np.arange(1, h + 1)
+for (f, fc, lab) in [(fit_lin, fc_lin, "Linear"), (fit_exp, fc_exp, "Exponential"),
+                     (fit_pw, fc_pw, "Piecewise"), (fit_spline, fc_spl, "Cubic Spline")]:
+    line, = ax.plot(tm, f.fitted, label=lab)
+    ax.plot(tf, fc.mean, color=line.get_color())
+    if lab == "Piecewise":
+        ax.fill_between(tf, fc.lower[95], fc.upper[95], color=line.get_color(), alpha=0.2)
+ax.set_title("Boston Marathon"); ax.set_xlabel("Year"); ax.set_ylabel("Winning times in minutes"); ax.legend(); plt.show()
+```
+
+The piecewise trend gives the most sensible forecasts; the cubic spline fits history best but
+forecasts badly.
+
+**Natural cubic smoothing splines** (`splinef()`) constrain the curve to be linear at the ends,
+use many knots with a penalty (no subjective knot choice) and forecast by linear extrapolation of the
+end trend. With `lambda = 0` (log scale) the heteroscedasticity is handled.
+
+### Cubic smoothing spline forecasts and residuals (Figures 5.22–5.23) {.tabset .tabset-pills}
+
+*Python's `c5.splinef()` ports R's algorithm. With `method="mle"` the two are identical; with the
+default `"gcv"` R picks the smoothing parameter through `smooth.spline()`, so the Python curve is close
+but not identical.*
+
+#### R
+
+```{r splinef}
+marathon %>% splinef(lambda = 0) %>% autoplot()
+marathon %>% splinef(lambda = 0) %>% checkresiduals()
+```
+
+#### Python
+
+```{python splinef-py}
+fc_sp = c5.splinef(marathon, lambda_=0)
+fpp.plot_forecast(fc_sp); plt.show()
+ax_ = fpp.checkresiduals(fc_sp.residuals.pipe(lambda s: (s.attrs.update(frequency=1) or s)), df=0)
+```
+
+# 5.9 Correlation, causation and forecasting
+
+* **Correlation is not causation.** Ice-cream sales forecast drownings (both caused by temperature);
+  morning cyclist counts forecast afternoon rain (the causation runs the other way — the weather forecast
+  affects cyclists). Correlations are still useful for forecasting, but a causal model (temperature,
+  visitors; atmospheric data) is usually better.
+* **Confounded predictors** — effects that cannot be separated (a new competitor and a recession arriving
+  together). Not a problem for forecasting itself, but a problem for scenarios and for attributing effects.
+* **Multicollinearity** — predictors carry the same information (left and right foot size), or one is
+  a linear combination of others (the dummy trap: perfect collinearity → the model cannot be estimated).
+  High collinearity makes individual coefficients uncertain and t-tests unreliable, and forecasts unreliable
+  if future predictors leave the historical range. Otherwise, with good software, **it does not hurt forecasts**.
+
+### My demonstration: collinearity changes coefficients, not forecasts {.tabset .tabset-pills}
+
+Add a near-copy of Income (`Income2 = Income + 0.01·sin(t)`) and fall into the dummy trap.
+
+#### R
+
+```{r collinearity}
+d <- as.data.frame(uschange)
+d$Income2 <- d$Income + 0.01 * sin(seq_len(nrow(d)))
+m1 <- lm(Consumption ~ Income + Savings, data = d)
+m2 <- lm(Consumption ~ Income + Income2 + Savings, data = d)
+round(rbind(one_copy = c(coef(m1)[1:2], Income2 = NA, coef(m1)[3]), two_copies = coef(m2)), 3)
+round(summary(m2)$coefficients[, "Std. Error"], 3)
+new <- data.frame(Income = 1, Income2 = 1 + 0.01 * sin(nrow(d) + 1), Savings = 0.5)
+c(forecast_m1 = unname(predict(m1, new)), forecast_m2 = unname(predict(m2, new)))
+# Dummy variable trap: four quarter dummies + intercept -> one coefficient is not estimable (NA)
+q <- factor(cycle(beer2)); D <- model.matrix(~ q - 1)
+coef(lm(as.numeric(beer2) ~ D))
+```
+
+#### Python
+
+```{python collinearity-py}
+d = us.copy().reset_index(drop=True)
+d["Income2"] = d["Income"] + 0.01 * np.sin(np.arange(1, len(d) + 1))
+m1 = smf.ols("Consumption ~ Income + Savings", data=d).fit()
+m2 = smf.ols("Consumption ~ Income + Income2 + Savings", data=d).fit()
+print(pd.DataFrame({"one_copy": m1.params, "two_copies": m2.params}).round(3))
+print(m2.bse.round(3))
+new = pd.DataFrame({"Income": [1.0], "Income2": [1 + 0.01 * np.sin(len(d) + 1)], "Savings": [0.5]})
+print({"forecast_m1": float(m1.predict(new)[0]), "forecast_m2": float(m2.predict(new)[0])})
+D = pd.get_dummies(np.asarray(beer2.attrs["cycle"])).astype(float).to_numpy()
+Xtrap = np.column_stack([np.ones(len(D)), D])
+{"columns": Xtrap.shape[1], "rank": int(np.linalg.matrix_rank(Xtrap))}   # rank < columns: not estimable
+```
+
+The copy makes the individual Income coefficients wildly uncertain (huge standard errors) yet the
+forecast barely moves. With the trap, the design matrix has 5 columns but rank 4: one coefficient
+cannot be estimated (R reports `NA`).
+
+# Model testing — every model used in this chapter
+
+Each model is re-fitted on a training period and evaluated on later data it has not seen.
+For uschange the regressions are tested both **ex-post** (actual future predictors) and **ex-ante**
+(predictors forecast by their training means). Models from the exercises are included too.
+
+| Data | Training | Test | Models |
+|---|---|---|---|
+| `uschange` | 1970 Q1–2012 Q4 | 2013 Q1–2016 Q3 | income only, all four predictors, best three; mean benchmark |
+| `ausbeer` | 1992 Q1–2007 Q4 | 2008 Q1–2010 Q2 | trend+season, Fourier K=2 (identical), Fourier K=1, seasonal naive |
+| `marathon` | 1897–2006 | 2007–2016 | linear, exponential, piecewise, cubic spline, smoothing spline, naive |
+| `Seatbelts` drivers | 1969–1983 | 1984 | trend+season with and without the law step |
+| `ausair` | 1970–2006 | 2007–2011 | spurious regression on rice vs. drift |
+| `gasoline` (Ex. 6) | to end of 2004 | 2005 (52 weeks) | harmonic regression K = 12 vs. seasonal naive |
+| `fancy` (Ex. 5) | 1987–1992 | 1993 | log model with trend, season, surf dummy vs. seasonal naive |
+| `huron` (Ex. 7) | 1875–1964 | 1965–1972 | linear vs. piecewise (knot 1915) |
+| `mens400` (Ex. 2) | 1896–2004 | 2008–2016 | linear trend vs. naive |
+
+### Test-set accuracy {.tabset .tabset-pills}
+
+#### R
+
+```{r model-testing}
+acc <- function(f, x) accuracy(f, x)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]
+res <- list()
+# uschange
+us_tr <- window(uschange, end = c(2012, 4)); us_te <- window(uschange, start = 2013)
+h <- nrow(us_te); te_df <- as.data.frame(us_te)
+mean_df <- as.data.frame(t(colMeans(us_tr)))[rep(1, h), ]
+m_inc <- tslm(Consumption ~ Income, data = us_tr)
+m_all <- tslm(Consumption ~ Income + Production + Unemployment + Savings, data = us_tr)
+m_best <- tslm(Consumption ~ Income + Savings + Unemployment, data = us_tr)
+res[["uschange: income only (ex-post)"]] <- acc(forecast(m_inc, newdata = te_df), us_te[, 1])
+res[["uschange: four predictors (ex-post)"]] <- acc(forecast(m_all, newdata = te_df), us_te[, 1])
+res[["uschange: best three (ex-post)"]] <- acc(forecast(m_best, newdata = te_df), us_te[, 1])
+res[["uschange: four predictors (ex-ante, mean x)"]] <- acc(forecast(m_all, newdata = mean_df), us_te[, 1])
+res[["uschange: mean of consumption"]] <- acc(meanf(us_tr[, 1], h = h), us_te[, 1])
+# beer
+b_tr <- window(ausbeer, start = 1992, end = c(2007, 4)); b_te <- window(ausbeer, start = 2008); hb <- length(b_te)
+res[["beer: trend + season"]] <- acc(forecast(tslm(b_tr ~ trend + season), h = hb), b_te)
+F2 <- fourier(b_tr, K = 2); F1 <- fourier(b_tr, K = 1)
+res[["beer: trend + Fourier K=2"]] <- acc(forecast(tslm(b_tr ~ trend + F2), newdata = data.frame(F2 = I(fourier(b_tr, K = 2, h = hb)))), b_te)
+res[["beer: trend + Fourier K=1"]] <- acc(forecast(tslm(b_tr ~ trend + F1), newdata = data.frame(F1 = I(fourier(b_tr, K = 1, h = hb)))), b_te)
+res[["beer: seasonal naive"]] <- acc(snaive(b_tr, h = hb), b_te)
+# marathon
+m_tr <- window(marathon, end = 2006); m_te <- window(marathon, start = 2007); hm <- length(m_te)
+tt <- time(m_tr); k1 <- pmax(0, tt - 1940); k2 <- pmax(0, tt - 1980)
+nd <- data.frame(tt = tt[length(tt)] + 1:hm, k1 = k1[length(k1)] + 1:hm, k2 = k2[length(k2)] + 1:hm)
+res[["marathon: linear"]] <- acc(forecast(tslm(m_tr ~ trend), h = hm), m_te)
+res[["marathon: exponential"]] <- acc(forecast(tslm(m_tr ~ trend, lambda = 0), h = hm), m_te)
+res[["marathon: piecewise"]] <- acc(forecast(tslm(m_tr ~ tt + k1 + k2), newdata = nd), m_te)
+res[["marathon: cubic spline"]] <- acc(forecast(tslm(m_tr ~ tt + I(tt^2) + I(tt^3) + I(k1^3) + I(k2^3)), newdata = nd), m_te)
+res[["marathon: smoothing spline"]] <- acc(splinef(m_tr, lambda = 0, h = hm), m_te)
+res[["marathon: naive"]] <- acc(naive(m_tr, h = hm), m_te)
+# Seatbelts
+sb_tr <- window(Seatbelts, end = c(1983, 12)); sb_te <- window(Seatbelts, start = 1984)
+d_tr <- sb_tr[, "drivers"]; law_tr <- sb_tr[, "law"]
+res[["seatbelts: trend + season + law"]] <- acc(forecast(tslm(d_tr ~ trend + season + law_tr), newdata = data.frame(law_tr = sb_te[, "law"])), sb_te[, "drivers"])
+res[["seatbelts: trend + season (no law)"]] <- acc(forecast(tslm(d_tr ~ trend + season), h = 12), sb_te[, "drivers"])
+# spurious
+a_tr <- window(ausair, end = 2006); a_te <- window(ausair, start = 2007, end = 2011)
+rice_tr <- window(guinearice, end = 2006)
+res[["ausair: regression on Guinea rice"]] <- acc(forecast(tslm(a_tr ~ rice_tr), newdata = data.frame(rice_tr = window(guinearice, start = 2007))), a_te)
+res[["ausair: drift"]] <- acc(rwf(a_tr, drift = TRUE, h = 5), a_te)
+# gasoline (Ex. 6)
+g_tr <- window(gasoline, end = 2005); g_te <- window(gasoline, start = 2005.01, end = 2006)
+G <- fourier(g_tr, K = 12)
+res[["gasoline: harmonic K=12"]] <- acc(forecast(tslm(g_tr ~ trend + G), newdata = data.frame(G = I(fourier(g_tr, K = 12, h = length(g_te))))), g_te)
+res[["gasoline: seasonal naive"]] <- acc(snaive(g_tr, h = length(g_te)), g_te)
+# fancy (Ex. 5)
+f_tr <- window(fancy, end = c(1992, 12)); f_te <- window(fancy, start = 1993)
+surf <- ts(as.numeric(cycle(f_tr) == 3 & time(f_tr) >= 1988), start = 1987, frequency = 12)
+res[["fancy: log(trend + season + surf)"]] <- acc(forecast(tslm(f_tr ~ trend + season + surf, lambda = 0), newdata = data.frame(surf = c(0, 0, 1, rep(0, 9)))), f_te)
+res[["fancy: seasonal naive"]] <- acc(snaive(f_tr, h = 12), f_te)
+# huron (Ex. 7)
+hu_tr <- window(huron, end = 1964); hu_te <- window(huron, start = 1965)
+th <- time(hu_tr); kh <- pmax(0, th - 1915)
+res[["huron: linear"]] <- acc(forecast(tslm(hu_tr ~ trend), h = 8), hu_te)
+res[["huron: piecewise (1915)"]] <- acc(forecast(tslm(hu_tr ~ th + kh), newdata = data.frame(th = 1965:1972, kh = 1965:1972 - 1915)), hu_te)
+# mens400 (Ex. 2)
+r_tr <- window(mens400, end = 2004); r_te <- window(mens400, start = 2008)
+res[["mens400: linear trend"]] <- acc(forecast(tslm(r_tr ~ trend), h = 3), r_te)
+res[["mens400: naive"]] <- acc(naive(r_tr, h = 3), r_te)
+results_r <- do.call(rbind, res)
+round(results_r, 3)
+```
+
+#### Python
+
+```{python model-testing-py}
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+def acc(fc, test, train=None, m=None):
+    if isinstance(fc, fpp.Forecast):
+        return fpp.accuracy(fc, test, m=m).loc["Test set", cols]
+    return fpp.accuracy(fc, test, train=train, m=m).loc["Test set", cols]
+res = {}
+# uschange
+us_tr, us_te = fpp.window(us, end=(2012, 4)), fpp.window(us, start=2013)
+y_tr = us_tr["Consumption"]; y_tr.attrs = dict(us.attrs)
+hU = len(us_te); mean_df = pd.DataFrame([us_tr.mean()] * hU)
+for lab, cols_x, nd in [("income only (ex-post)", ["Income"], us_te),
+                        ("four predictors (ex-post)", ["Income", "Production", "Unemployment", "Savings"], us_te),
+                        ("best three (ex-post)", ["Income", "Savings", "Unemployment"], us_te),
+                        ("four predictors (ex-ante, mean x)", ["Income", "Production", "Unemployment", "Savings"], mean_df)]:
+    f = c5.tslm(y_tr, X=us_tr[cols_x])
+    res[f"uschange: {lab}"] = acc(c5.forecast_lm(f, newdata=nd), us_te["Consumption"])
+res["uschange: mean of consumption"] = acc(fpp.meanf(y_tr, h=hU), us_te["Consumption"])
+# beer
+beer = fpp.load("ausbeer")
+b_tr, b_te = fpp.window(beer, start=1992, end=(2007, 4)), fpp.window(beer, start=2008); hb = len(b_te)
+res["beer: trend + season"] = acc(c5.forecast_lm(c5.tslm(b_tr, trend_=True, season=True), h=hb), b_te)
+res["beer: trend + Fourier K=2"] = acc(c5.forecast_lm(c5.tslm(b_tr, trend_=True, K=2), h=hb), b_te)
+res["beer: trend + Fourier K=1"] = acc(c5.forecast_lm(c5.tslm(b_tr, trend_=True, K=1), h=hb), b_te)
+res["beer: seasonal naive"] = acc(fpp.snaive(b_tr, h=hb), b_te)
+# marathon
+m_tr, m_te = fpp.window(marathon, end=2006), fpp.window(marathon, start=2007); hm = len(m_te)
+tt = fpp.ts_time(m_tr); Xk = pd.DataFrame({"tt": tt, "k1": np.maximum(0, tt - 1940), "k2": np.maximum(0, tt - 1980)})
+nd = pd.DataFrame({"tt": tt[-1] + np.arange(1, hm + 1), "k1": Xk.k1.iloc[-1] + np.arange(1, hm + 1),
+                   "k2": Xk.k2.iloc[-1] + np.arange(1, hm + 1)})
+cub = lambda d: pd.DataFrame({"tt": d.tt, "tt2": d.tt ** 2, "tt3": d.tt ** 3, "k13": d.k1 ** 3, "k23": d.k2 ** 3})
+res["marathon: linear"] = acc(c5.forecast_lm(c5.tslm(m_tr, trend_=True), h=hm), m_te)
+res["marathon: exponential"] = acc(c5.forecast_lm(c5.tslm(m_tr, trend_=True, lambda_=0), h=hm), m_te)
+res["marathon: piecewise"] = acc(c5.forecast_lm(c5.tslm(m_tr, X=Xk), newdata=nd), m_te)
+res["marathon: cubic spline"] = acc(c5.forecast_lm(c5.tslm(m_tr, X=cub(Xk)), newdata=cub(nd)), m_te)
+res["marathon: smoothing spline"] = acc(c5.splinef(m_tr, lambda_=0, h=hm), m_te)
+res["marathon: naive"] = acc(fpp.naive(m_tr, h=hm), m_te)
+# Seatbelts
+sb_tr, sb_te = fpp.window(sb, end=(1983, 12)), fpp.window(sb, start=1984)
+d_tr = sb_tr["drivers"]; d_tr.attrs = dict(sb.attrs)
+res["seatbelts: trend + season + law"] = acc(c5.forecast_lm(c5.tslm(d_tr, trend_=True, season=True, X=sb_tr[["law"]]),
+                                                             newdata=sb_te[["law"]]), sb_te["drivers"])
+res["seatbelts: trend + season (no law)"] = acc(c5.forecast_lm(c5.tslm(d_tr, trend_=True, season=True), h=12), sb_te["drivers"])
+# spurious
+a_tr, a_te = fpp.window(ausair, end=2006), fpp.window(ausair, start=2007, end=2011)
+rice = guinearice.to_numpy()
+f_sp = c5.tslm(a_tr, X=pd.DataFrame({"rice": rice[:len(a_tr)]}))
+res["ausair: regression on Guinea rice"] = acc(c5.forecast_lm(f_sp, newdata=pd.DataFrame({"rice": rice[len(a_tr):]})), a_te)
+res["ausair: drift"] = acc(fpp.rwf(a_tr, drift=True, h=5), a_te)
+# gasoline
+gas = fpp.load("gasoline")
+g_tr, g_te = fpp.window(gas, end=2005), fpp.window(gas, start=2005.01, end=2006)
+res["gasoline: harmonic K=12"] = acc(c5.forecast_lm(c5.tslm(g_tr, trend_=True, K=12), h=len(g_te)), g_te)
+res["gasoline: seasonal naive"] = acc(fpp.snaive(g_tr, h=len(g_te)), g_te)
+# fancy
+fancy = fpp.load("fancy")
+f_tr, f_te = fpp.window(fancy, end=(1992, 12)), fpp.window(fancy, start=1993)
+surf = ((f_tr.index.month == 3) & (f_tr.index.year >= 1988)).astype(float)
+res["fancy: log(trend + season + surf)"] = acc(c5.forecast_lm(c5.tslm(f_tr, trend_=True, season=True, lambda_=0,
+                                                   X=pd.DataFrame({"surf": surf})), newdata=pd.DataFrame({"surf": [0, 0, 1] + [0] * 9})), f_te)
+res["fancy: seasonal naive"] = acc(fpp.snaive(f_tr, h=12), f_te)
+# huron
+huron = fpp.load("huron")
+hu_tr, hu_te = fpp.window(huron, end=1964), fpp.window(huron, start=1965)
+th = fpp.ts_time(hu_tr)
+res["huron: linear"] = acc(c5.forecast_lm(c5.tslm(hu_tr, trend_=True), h=8), hu_te)
+res["huron: piecewise (1915)"] = acc(c5.forecast_lm(c5.tslm(hu_tr, X=pd.DataFrame({"th": th, "kh": np.maximum(0, th - 1915)})),
+                                     newdata=pd.DataFrame({"th": np.arange(1965, 1973.0), "kh": np.arange(1965, 1973.0) - 1915})), hu_te)
+# mens400 (frequency 1/4: MASE needs m=1)
+mens = fpp.load("mens400")
+r_tr, r_te = fpp.window(mens, end=2004), fpp.window(mens, start=2008)
+f_r = c5.tslm(r_tr, trend_=True)
+res["mens400: linear trend"] = acc(c5.forecast_lm(f_r, h=3), r_te, m=1)
+res["mens400: naive"] = acc(fpp.naive(r_tr, h=3), r_te, m=1)
+results_py = pd.DataFrame(res).T
+results_py.round(3)
+```
+
+### What the test shows
+
+* **uschange.** With the actual future predictors (ex-post) the four-predictor regression is far more
+  accurate than income alone or the mean. **Ex-ante**, with the predictors replaced by their training
+  means, the regression forecast is *exactly* the mean of consumption (a least-squares fit with an
+  intercept passes through the point of means) — the forecasts of the predictors are the weak link,
+  as Section 5.6 warns.
+* **Beer.** Fourier K=2 equals the seasonal dummies exactly; K=1 (a single sine wave) cannot capture
+  the quarterly shape and is worse than seasonal naive. The trend + season regression beats the benchmark.
+* **Marathon.** The piecewise trend and the smoothing spline forecast best; the linear trend and the
+  cubic regression spline are worse than the naive forecast — exactly the book's warning about
+  extrapolating polynomial terms.
+* **Seat belts (my example).** Neither model is good in 1984: the model with the law step
+  *under*-forecasts (mean error +118) because the post-law level is estimated from only 11 months and
+  deaths partly rebounded in 1984, while the model without it *over*-forecasts (mean error −98).
+  An intervention estimated from very few post-intervention observations is itself uncertain.
+* **Spurious regression.** Regressing passengers on Guinean rice forecasts 2007–2011 worse than a
+  simple drift: the "relationship" was an artefact of two trends.
+* **Exercise models.** Harmonic regression on gasoline beats seasonal naive; the log model for `fancy`
+  beats seasonal naive; the 1915 knot improves the Lake Huron forecasts; for `mens400` the linear trend
+  keeps predicting falling times that did not happen after 2004, so naive wins.
+* **R vs Python.** Every regression (trend, season, Fourier, interventions, splines, lambda = 0) matches
+  R to machine precision (the cubic spline needs QR least squares, as R uses, because $t^3$ for years
+  around 2000 makes the design matrix very ill-conditioned). Remaining differences: the smoothing spline
+  (R picks its smoothing parameter with `smooth.spline()` GCV; my port uses GCV on the equivalent
+  state-space form — identical when both use `method = "mle"`); the seasonal naive forecast of weekly
+  gasoline (R's `snaive()` with the non-integer period 52.18 aligns the "same week last year" one week
+  differently from `fpp.snaive()`, which uses a lag of 52); and MASE for `mens400`, whose frequency is
+  1/4 — R's scaling is not meaningful there, so Python uses the one-step naive scaling (`m = 1`).
+
+# Key takeaways
+
+* Regression forecasts $y$ from predictors; coefficients are marginal effects estimated by least squares.
+* Always check residuals: ACF + Breusch–Godfrey, histogram, against predictors and fitted values; beware outliers and spurious regressions.
+* Useful predictors: trend, (seasonal) dummies, interventions, trading days, lags, Easter, Fourier terms.
+* Select predictors with CV/AIC/AICc (not R² or p-values); best subsets or stepwise.
+* Ex-ante forecasts need forecasts of the predictors; scenarios and lagged predictors are alternatives.
+* Use piecewise or smoothing-spline trends rather than polynomial trends; correlation ≠ causation.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*
