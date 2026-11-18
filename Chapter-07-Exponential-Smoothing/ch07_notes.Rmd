@@ -1,0 +1,807 @@
+---
+title: "Chapter 7 — Exponential smoothing"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+import fpp_ch07 as c7          # ets(), ses(), holt(), hw(), simulate()
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110});
+pd.set_option("display.width", 140); pd.set_option("display.max_columns", 20)
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 7** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and exercises are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+
+# Learning goals
+
+* Understand **simple exponential smoothing** (SES) as a weighted average with geometrically
+  decaying weights.
+* Add a **trend** (Holt), a **damped trend**, and **seasonality** (Holt-Winters).
+* Know the 9 exponential smoothing **methods** and the 18 **ETS state space models** behind them.
+* Estimate, select (AICc) and forecast **ETS** models, with prediction intervals.
+
+> **Python note.** In R every method in this chapter is fitted by `ets()`:
+> `ses()` = ETS(A,N,N), `holt()` = ETS(A,A,N), `hw()` = ETS(A,A,A) or ETS(M,A,M), all estimated
+> by minimising the MSE. `python/fpp_ch07.py` calls **statsforecast's port of `forecast::ets`**
+> with the same settings, adds R's residual-variance definition, fixes damped-trend point
+> forecasts, supports fixed parameters (e.g. `phi = 0.9`) and polishes the estimates with a
+> multi-start search. Results match R closely; where the likelihood has several local optima
+> the two languages can stop at different (equally valid) estimates — these cases are
+> pointed out.
+
+# 7.1 Simple exponential smoothing
+
+For data with **no clear trend or seasonality**. Between the two extremes
+
+* **naïve**: $\hat y_{T+1|T} = y_T$ (all weight on the last observation) and
+* **average**: $\hat y_{T+1|T} = \frac1T\sum y_t$ (equal weights),
+
+SES uses weights that **decrease geometrically** into the past:
+$$\hat y_{T+1|T} = \alpha y_T + \alpha(1-\alpha) y_{T-1} + \alpha(1-\alpha)^2 y_{T-2} + \cdots,\qquad 0 \le \alpha \le 1.$$
+
+Small $\alpha$ → more weight on the distant past (smoother); large $\alpha$ → more weight on
+recent observations.
+
+**Weighted-average form:** $\hat y_{T+1|T} = \alpha y_T + (1-\alpha)\hat y_{T|T-1}$.
+
+**Component form:** forecast equation $\hat y_{t+h|t} = \ell_t$; smoothing equation
+$\ell_t = \alpha y_t + (1-\alpha)\ell_{t-1}$. All forecasts are **flat**: $\hat y_{T+h|T} = \ell_T$.
+
+**Estimation:** choose $\alpha$ and the initial level $\ell_0$ by minimising the SSE
+$\sum_t (y_t - \hat y_{t|t-1})^2$ (a non-linear optimisation).
+
+### Weights for different α {.tabset .tabset-pills}
+
+#### R
+
+```{r weights}
+alphas <- c(0.2, 0.4, 0.6, 0.8)
+w <- sapply(alphas, function(a) a * (1 - a)^(0:5))
+dimnames(w) <- list(paste0("y[T-", 0:5, "]"), paste0("alpha=", alphas))
+round(w, 4)
+```
+
+#### Python
+
+```{python weights-py}
+alphas = [0.2, 0.4, 0.6, 0.8]
+pd.DataFrame({f"alpha={a}": [a * (1 - a) ** j for j in range(6)] for a in alphas},
+             index=[f"y[T-{j}]" for j in range(6)]).round(4)
+```
+
+### Oil production in Saudi Arabia (Figure 7.1) {.tabset .tabset-pills}
+
+#### R
+
+```{r oil}
+oildata <- window(oil, start = 1996)
+autoplot(oildata) + ylab("Oil (millions of tonnes)") + xlab("Year")
+```
+
+#### Python
+
+```{python oil-py}
+oildata = fpp.window(fpp.load("oil"), start=1996)
+fpp.autoplot(oildata, ylab="Oil (millions of tonnes)", xlab="Year"); plt.show();
+```
+
+### SES by hand (component form) {.tabset .tabset-pills}
+
+The recursion is only a few lines; with the estimated $\alpha$ and $\ell_0$ it reproduces `ses()`.
+
+#### R
+
+```{r ses-hand}
+ses_hand <- function(y, alpha, level) {
+  for (t in seq_along(y)) level <- alpha * y[t] + (1 - alpha) * level
+  level                                   # = forecast for every horizon
+}
+fc <- ses(oildata, h = 5)
+ses_hand(oildata, fc$model$par["alpha"], fc$model$par["l"])
+fc$mean[1]
+```
+
+#### Python
+
+```{python ses-hand-py}
+def ses_hand(y, alpha, level):
+    for v in np.asarray(y, dtype=float):
+        level = alpha * v + (1 - alpha) * level
+    return level
+
+fc = c7.ses(oildata, h=5)
+par = fc.extra["fit"].par
+print(ses_hand(oildata, par["alpha"], par["l"]), fc.mean.iloc[0])
+```
+
+### Estimating α and ℓ₀ with ses() (Table 7.1) {.tabset .tabset-pills}
+
+#### R
+
+```{r ses}
+fc <- ses(oildata, h = 5)
+fc$model$par           # alpha and l0
+round(accuracy(fc), 2)
+fc
+```
+
+#### Python
+
+```{python ses-py}
+fc = c7.ses(oildata, h=5)
+print(fc.extra["fit"].par)
+print(fpp.accuracy(fc).round(2))
+fc.summary().round(2)
+```
+
+### Fitted values and forecasts (Figure 7.2) {.tabset .tabset-pills}
+
+#### R
+
+```{r ses-plot}
+autoplot(fc) + autolayer(fitted(fc), series = "Fitted") +
+  ylab("Oil (millions of tonnes)") + xlab("Year")
+```
+
+#### Python
+
+```{python ses-plot-py}
+ax = fpp.plot_forecast(fc, ylab="Oil (millions of tonnes)")
+ax.plot(fpp.ts_time(oildata), fc.fitted.to_numpy(), color="red", label="Fitted");
+ax.legend(); plt.show();
+```
+
+The large $\alpha \approx 0.83$ means the forecasts track the most recent level closely.
+The prediction intervals are wide because SES ignores the trend-like movements.
+
+# 7.2 Trend methods
+
+## Holt's linear trend method
+
+Adds a slope $b_t$:
+
+$$\begin{aligned}
+\hat y_{t+h|t} &= \ell_t + h b_t\\
+\ell_t &= \alpha y_t + (1-\alpha)(\ell_{t-1} + b_{t-1})\\
+b_t &= \beta^*(\ell_t - \ell_{t-1}) + (1-\beta^*) b_{t-1}
+\end{aligned}$$
+
+Forecasts are a straight line — constant trend forever.
+
+### Air passengers in Australia (Figure 7.3) {.tabset .tabset-pills}
+
+#### R
+
+```{r holt}
+air <- window(ausair, start = 1990)
+fc <- holt(air, h = 5)
+fc$model$par
+fc
+```
+
+#### Python
+
+```{python holt-py}
+air = fpp.window(fpp.load("ausair"), start=1990)
+fc = c7.holt(air, h=5)
+print(fc.extra["fit"].par)
+fc.summary().round(4)
+```
+
+Here $\beta^* \approx 0.0001$: the slope hardly changes over time.
+
+## Damped trend methods
+
+A **damping parameter** $0 < \phi < 1$ flattens the trend in the long run (Gardner &
+McKenzie, 1985):
+
+$$\hat y_{t+h|t} = \ell_t + (\phi + \phi^2 + \dots + \phi^h) b_t,\quad
+\ell_t = \alpha y_t + (1-\alpha)(\ell_{t-1} + \phi b_{t-1}),\quad
+b_t = \beta^*(\ell_t - \ell_{t-1}) + (1-\beta^*)\phi b_{t-1}.$$
+
+$\phi = 1$ gives Holt's method; in practice $\phi$ is restricted to $[0.8, 0.98]$. Forecasts
+converge to $\ell_T + \phi b_T/(1-\phi)$.
+
+### Holt vs damped Holt (Figure 7.4) {.tabset .tabset-pills}
+
+#### R
+
+```{r damped}
+fc <- holt(air, h = 15)
+fc2 <- holt(air, damped = TRUE, phi = 0.9, h = 15)
+autoplot(air) +
+  autolayer(fc, series = "Holt's method", PI = FALSE) +
+  autolayer(fc2, series = "Damped Holt's method", PI = FALSE) +
+  ggtitle("Forecasts from Holt's method") + xlab("Year") +
+  ylab("Air passengers in Australia (millions)") + guides(colour = guide_legend(title = "Forecast"))
+fc2$model$par
+```
+
+#### Python
+
+```{python damped-py}
+fc = c7.holt(air, h=15)
+fc2 = c7.holt(air, damped=True, phi=0.9, h=15)
+ax = fpp.autoplot(air, title="Forecasts from Holt's method", xlab="Year",
+                  ylab="Air passengers in Australia (millions)")
+tf = fpp.ts_time(air)[-1] + np.arange(1, 16)
+ax.plot(tf, fc.mean.to_numpy(), label="Holt's method");
+ax.plot(tf, fc2.mean.to_numpy(), label="Damped Holt's method");
+ax.legend(); plt.show();
+print(fc2.extra["fit"].par)
+```
+
+## Example: sheep in Asia — comparing methods with time series cross-validation
+
+`livestock`: annual sheep numbers in Asia, 1961–2007. Compare one-step-ahead
+cross-validated errors of SES, Holt and damped Holt.
+
+### tsCV comparison {.tabset .tabset-pills}
+
+#### R
+
+```{r livestock-cv}
+autoplot(livestock) + xlab("Year") + ylab("Livestock, sheep in Asia (millions)")
+e1 <- tsCV(livestock, ses, h = 1)
+e2 <- tsCV(livestock, holt, h = 1)
+e3 <- tsCV(livestock, holt, damped = TRUE, h = 1)
+cv_r <- rbind(MSE = c(SES = mean(e1^2, na.rm = TRUE), Holt = mean(e2^2, na.rm = TRUE),
+                      Damped = mean(e3^2, na.rm = TRUE)),
+              MAE = c(mean(abs(e1), na.rm = TRUE), mean(abs(e2), na.rm = TRUE),
+                      mean(abs(e3), na.rm = TRUE)))
+round(cv_r, 2)
+```
+
+#### Python
+
+```{python livestock-cv-py}
+livestock = fpp.load("livestock")
+fpp.autoplot(livestock, xlab="Year", ylab="Livestock, sheep in Asia (millions)"); plt.show();
+e1 = fpp.tsCV(livestock, c7.ses, h=1)
+e2 = fpp.tsCV(livestock, c7.holt, h=1)
+e3 = fpp.tsCV(livestock, c7.holt, damped=True, h=1)
+cv_py = pd.DataFrame({k: [np.nanmean(e.to_numpy() ** 2), np.nanmean(np.abs(e.to_numpy()))]
+                      for k, e in {"SES": e1, "Holt": e2, "Damped": e3}.items()},
+                     index=["MSE", "MAE"])
+cv_py.round(2)
+```
+
+In R, damped Holt has the lowest MSE and MAE, so the book uses it for the whole series. In Python damped Holt has the lowest MAE and an MSE tied with Holt: statsforecast cannot fit the first few very short training windows (fewer than ~8 points) that R does fit, so the two averages are over slightly different sets of origins, and the one huge 1991 error dominates the MSE.
+
+### Damped Holt fitted to all the data (Figure 7.5) {.tabset .tabset-pills}
+
+#### R
+
+```{r livestock-fit}
+fc <- holt(livestock, damped = TRUE)
+fc$model
+autoplot(fc) + xlab("Year") + ylab("Livestock, sheep in Asia (millions)")
+```
+
+#### Python
+
+```{python livestock-fit-py}
+fc = c7.holt(livestock, damped=True)
+print(fc.extra["fit"].summary())
+fpp.plot_forecast(fc, ylab="Livestock, sheep in Asia (millions)"); plt.show();
+```
+
+The smoothing parameter for the slope is ~0 (essentially a fixed slope) while $\alpha$ is
+close to 1 (the level reacts strongly to each new observation).
+
+# 7.3 Holt-Winters' seasonal method
+
+Adds a seasonal component $s_t$ with smoothing parameter $\gamma$ and period $m$.
+
+**Additive** (seasonal swings roughly constant; seasonal component in absolute units and sums
+to ≈0 over a year):
+$$\begin{aligned}
+\hat y_{t+h|t} &= \ell_t + h b_t + s_{t+h-m(k+1)}\\
+\ell_t &= \alpha(y_t - s_{t-m}) + (1-\alpha)(\ell_{t-1} + b_{t-1})\\
+b_t &= \beta^*(\ell_t - \ell_{t-1}) + (1-\beta^*)b_{t-1}\\
+s_t &= \gamma(y_t - \ell_{t-1} - b_{t-1}) + (1-\gamma)s_{t-m}
+\end{aligned}$$
+($k = \lfloor (h-1)/m \rfloor$ makes sure the latest seasonal estimates are used.)
+
+**Multiplicative** (swings proportional to the level; seasonal component is a ratio and sums
+to ≈m): $\hat y_{t+h|t} = (\ell_t + h b_t)\, s_{t+h-m(k+1)}$ with
+$\ell_t = \alpha \frac{y_t}{s_{t-m}} + (1-\alpha)(\ell_{t-1}+b_{t-1})$ and
+$s_t = \gamma \frac{y_t}{\ell_{t-1}+b_{t-1}} + (1-\gamma)s_{t-m}$.
+
+### International visitor nights in Australia (Figure 7.6) {.tabset .tabset-pills}
+
+#### R
+
+```{r hw}
+aust <- window(austourists, start = 2005)
+fit1 <- hw(aust, seasonal = "additive")
+fit2 <- hw(aust, seasonal = "multiplicative")
+autoplot(aust) +
+  autolayer(fit1, series = "HW additive forecasts", PI = FALSE) +
+  autolayer(fit2, series = "HW multiplicative forecasts", PI = FALSE) +
+  xlab("Year") + ylab("Visitor nights (millions)") +
+  ggtitle("International visitors nights in Australia") + guides(colour = guide_legend(title = "Forecast"))
+rbind(additive = c(fit1$model$par[1:3], RMSE = accuracy(fit1)[, "RMSE"]),
+      multiplicative = c(fit2$model$par[1:3], RMSE = accuracy(fit2)[, "RMSE"]))
+```
+
+#### Python
+
+```{python hw-py}
+aust = fpp.window(fpp.load("austourists"), start=2005)
+fit1 = c7.hw(aust, seasonal="additive")
+fit2 = c7.hw(aust, seasonal="multiplicative")
+ax = fpp.autoplot(aust, title="International visitors nights in Australia", xlab="Year",
+                  ylab="Visitor nights (millions)")
+tf = fpp.ts_time(aust)[-1] + np.arange(1, 9) / 4
+ax.plot(tf, fit1.mean.to_numpy(), label="HW additive forecasts");
+ax.plot(tf, fit2.mean.to_numpy(), label="HW multiplicative forecasts");
+ax.legend(); plt.show();
+pd.DataFrame({k: {**{p: f.extra["fit"].par.get(p) for p in ["alpha", "beta", "gamma"]},
+                  "RMSE": fpp.accuracy(f).loc["Training set", "RMSE"]}
+              for k, f in {"additive": fit1, "multiplicative": fit2}.items()}).T.round(4)
+```
+
+### Estimated states (Figure 7.7) {.tabset .tabset-pills}
+
+#### R
+
+```{r hw-states, fig.height=6}
+states <- cbind(Additive = fit1$model$states[, 1:3], Multiplicative = fit2$model$states[, 1:3])
+autoplot(states, facets = TRUE) + xlab("Year") + ylab("")
+```
+
+#### Python
+
+```{python hw-states-py}
+fig, axes = plt.subplots(3, 2, figsize=(9, 6), sharex=True)
+for col, (lab, f) in enumerate({"Additive": fit1, "Multiplicative": fit2}.items()):
+    st = f.extra["fit"].states()
+    for row, comp in enumerate(["level", "slope", "s1"]):
+        axes[row, col].plot(st[comp].to_numpy());
+        axes[row, col].set_title(f"{lab}: {comp}", fontsize=9);
+plt.tight_layout(); plt.show()
+```
+
+The additive seasonal component is in millions of nights; the multiplicative one is a ratio
+around 1. The additive and multiplicative fits look similar; the multiplicative method has
+the smaller training RMSE here.
+
+## Holt-Winters' damped method
+
+Damping with multiplicative seasonality often gives the most accurate seasonal forecasts:
+$\hat y_{t+h|t} = [\ell_t + (\phi + \dots + \phi^h) b_t]\, s_{t+h-m(k+1)}$.
+
+### Daily pedestrian traffic: damped multiplicative HW (Figure 7.8) {.tabset .tabset-pills}
+
+`hyndsight`: daily page views of the Hyndsight blog (weekly seasonality, m = 7);
+forecasting the last five weeks.
+
+#### R
+
+```{r hw-damped}
+fc <- hw(subset(hyndsight, end = length(hyndsight) - 35), damped = TRUE,
+         seasonal = "multiplicative", h = 35)
+autoplot(hyndsight) + autolayer(fc, series = "HW multi damped", PI = FALSE) +
+  guides(colour = guide_legend(title = "Daily forecasts"))
+fc$model$par[1:4]
+```
+
+#### Python
+
+```{python hw-damped-py}
+hyndsight = fpp.load("hyndsight")
+fc = c7.hw(hyndsight.iloc[:-35].pipe(lambda s: (s.attrs.update(hyndsight.attrs) or s)),
+           damped=True, seasonal="multiplicative", h=35)
+ax = fpp.autoplot(hyndsight, title="Hyndsight daily page views")
+ax.plot(fpp.ts_time(hyndsight)[-35:], fc.mean.to_numpy(), label="HW multi damped");
+ax.legend(); plt.show();
+print({k: round(v, 4) for k, v in fc.extra["fit"].par.items() if k in ("alpha", "beta", "gamma", "phi")})
+```
+
+Here the two languages land on different optima for φ (R ≈ 0.95, Python at the lower bound
+0.8) — the likelihood surface is very flat in φ for this noisy daily series, and the
+forecasts over 35 days are almost the same.
+
+# 7.4 A taxonomy of exponential smoothing methods
+
+Combining a trend component (None, Additive, Additive damped) with a seasonal component
+(None, Additive, Multiplicative) gives **nine methods**:
+
+| Trend \\ Seasonal | N | A | M |
+|---|---|---|---|
+| **N** | (N,N) simple exponential smoothing | (N,A) | (N,M) |
+| **A** | (A,N) Holt's linear method | (A,A) additive Holt-Winters | (A,M) multiplicative Holt-Winters |
+| **A_d** | (A_d,N) additive damped trend | (A_d,A) | (A_d,M) Holt-Winters damped |
+
+(Multiplicative trend methods exist but tend to give poor forecasts, so they are excluded.)
+
+### All nine methods on the tourism data {.tabset .tabset-pills}
+
+Each method is an ETS model with additive errors for the additive cells and multiplicative
+errors for the multiplicative-seasonal cells, estimated by MSE.
+
+#### R
+
+```{r taxonomy}
+methods <- expand.grid(trend = c("N", "A", "Ad"), season = c("N", "A", "M"), stringsAsFactors = FALSE)
+tax_r <- t(apply(methods, 1, function(m) {
+  err <- if (m["season"] == "M") "M" else "A"
+  fit <- ets(aust, model = paste0(err, substr(m["trend"], 1, 1), m["season"]),
+             damped = m["trend"] == "Ad", opt.crit = "mse")
+  c(method = paste0("(", m["trend"], ",", m["season"], ")"),
+    RMSE = round(accuracy(fit)[, "RMSE"], 3))
+}))
+tax_r
+```
+
+#### Python
+
+```{python taxonomy-py}
+rows = []
+for season in ["N", "A", "M"]:
+    for trend in ["N", "A", "Ad"]:
+        err = "M" if season == "M" else "A"
+        fit = c7.ets(aust, model=err + trend[0] + season, damped=(trend == "Ad"), opt_crit="mse")
+        rmse = np.sqrt(np.mean((aust - fit.fitted) ** 2))
+        rows.append({"method": f"({trend},{season})", "RMSE": round(rmse, 3)})
+pd.DataFrame(rows)
+```
+
+# 7.5 Innovations state space models for exponential smoothing
+
+Each method corresponds to **two** statistical models — one with **additive** errors and one
+with **multiplicative** errors. They give the same point forecasts but different prediction
+intervals. Label: **ETS(Error, Trend, Seasonal)**.
+
+* **ETS(A,N,N)** (SES with additive errors), with $e_t = y_t - \ell_{t-1} = \varepsilon_t \sim \text{NID}(0,\sigma^2)$:
+  measurement $y_t = \ell_{t-1} + \varepsilon_t$; state $\ell_t = \ell_{t-1} + \alpha\varepsilon_t$.
+* **ETS(M,N,N)**: relative errors $\varepsilon_t = (y_t - \hat y_{t|t-1})/\hat y_{t|t-1}$:
+  $y_t = \ell_{t-1}(1+\varepsilon_t)$, $\ell_t = \ell_{t-1}(1+\alpha\varepsilon_t)$.
+* **ETS(A,A,N)**: $y_t = \ell_{t-1} + b_{t-1} + \varepsilon_t$, $\ell_t = \ell_{t-1} + b_{t-1} + \alpha\varepsilon_t$, $b_t = b_{t-1} + \beta\varepsilon_t$ (with $\beta = \alpha\beta^*$).
+* **ETS(M,A,N)**: $y_t = (\ell_{t-1} + b_{t-1})(1+\varepsilon_t)$, $\ell_t = (\ell_{t-1}+b_{t-1})(1+\alpha\varepsilon_t)$, $b_t = b_{t-1} + \beta(\ell_{t-1}+b_{t-1})\varepsilon_t$.
+
+There are 18 models (9 methods × 2 error types); Table 7.7 of the book lists all equations.
+Some combinations (e.g. additive errors with multiplicative seasonality) are numerically
+unstable and are not used by default.
+
+### Additive vs multiplicative errors: simulated sample paths {.tabset .tabset-pills}
+
+Same level and smoothing parameter; with multiplicative errors the noise scales with the level. (In Python both paths use the same random draws, so they look alike — the multiplicative path's noise is the same draws times the level.)
+
+#### R
+
+```{r sim-errors}
+set.seed(2024)
+fit_a <- ets(oildata, model = "ANN"); fit_m <- ets(oildata, model = "MNN")
+sims <- cbind(`ETS(A,N,N)` = simulate(fit_a, nsim = 20, future = TRUE),
+              `ETS(M,N,N)` = simulate(fit_m, nsim = 20, future = TRUE))
+autoplot(oildata) + autolayer(sims) + ylab("Oil") + ggtitle("One simulated future from each model")
+rbind(ANN = c(fit_a$par[1:2], sigma = sqrt(fit_a$sigma2)), MNN = c(fit_m$par[1:2], sigma = sqrt(fit_m$sigma2)))
+```
+
+#### Python
+
+```{python sim-errors-py}
+fit_a = c7.ets(oildata, "ANN"); fit_m = c7.ets(oildata, "MNN")
+sa = c7.simulate(fit_a, nsim=20, seed=2024)[0]; sm = c7.simulate(fit_m, nsim=20, seed=2024)[0]
+ax = fpp.autoplot(oildata, title="One simulated future from each model", ylab="Oil")
+tf = fpp.ts_time(oildata)[-1] + np.arange(1, 21)
+ax.plot(tf, sa, label="ETS(A,N,N)"); ax.plot(tf, sm, label="ETS(M,N,N)"); ax.legend(); plt.show();
+pd.DataFrame({"ANN": {**fit_a.par, "sigma": np.sqrt(fit_a.sigma2)},
+              "MNN": {**fit_m.par, "sigma": np.sqrt(fit_m.sigma2)}}).T.round(4)
+```
+
+# 7.6 Estimation and model selection
+
+**Estimation:** maximise the **likelihood** (assuming normal errors) — for additive errors this
+is the same as minimising the SSE; for multiplicative errors it is not. Parameters are kept in
+the "usual" region $0<\alpha<1$, $0<\beta<\alpha$, $0<\gamma<1-\alpha$, $0.8<\phi<0.98$.
+
+**Model selection** with information criteria:
+$\text{AIC} = -2\log L + 2k$, $\text{AICc} = \text{AIC} + \frac{2k(k+1)}{T-k-1}$,
+$\text{BIC} = \text{AIC} + k[\log T - 2]$ ($k$ = number of parameters incl. initial states).
+`ets()` minimises the **AICc** by default.
+
+`ets(y, model = "ZZZ")`: each letter is A, M, N or Z (= automatically selected).
+
+### Automatic ETS for the tourism data {.tabset .tabset-pills}
+
+#### R
+
+```{r ets-aust}
+fit <- ets(aust)
+summary(fit)
+```
+
+#### Python
+
+```{python ets-aust-py}
+fit = c7.ets(aust)
+print(fit.summary())
+print(fpp.accuracy(fit.forecast(8)).round(4))
+```
+
+Both select **ETS(M,A,M)**. The parameter estimates differ a little (different optimisers),
+and the fit statistics are very close.
+
+### Information criteria for every candidate model {.tabset .tabset-pills}
+
+What `ets()` compares internally (15 admissible models with additive or damped trend).
+
+#### R
+
+```{r ic-table}
+cands <- expand.grid(e = c("A", "M"), t = c("N", "A", "Ad"), s = c("N", "A", "M"), stringsAsFactors = FALSE)
+cands <- cands[!(cands$e == "A" & cands$s == "M"), ]
+ic_r <- do.call(rbind, lapply(seq_len(nrow(cands)), function(i) {
+  cc <- cands[i, ]
+  f <- ets(aust, model = paste0(cc$e, substr(cc$t, 1, 1), cc$s), damped = cc$t == "Ad")
+  data.frame(model = f$method, AIC = f$aic, AICc = f$aicc, BIC = f$bic)
+}))
+ic_r <- ic_r[order(ic_r$AICc), ]; rownames(ic_r) <- NULL
+head(ic_r, 6)
+```
+
+#### Python
+
+```{python ic-table-py}
+rows = []
+for e in ["A", "M"]:
+    for tr in ["N", "A", "Ad"]:
+        for s in ["N", "A", "M"]:
+            if e == "A" and s == "M":
+                continue
+            f = c7.ets(aust, model=e + tr[0] + s, damped=(tr == "Ad"), polish=False)
+            rows.append({"model": f.method, "AIC": f.aic, "AICc": f.aicc, "BIC": f.bic})
+ic_py = pd.DataFrame(rows).sort_values("AICc").reset_index(drop=True)
+ic_py.head(6).round(2)
+```
+
+### Components (Figure 7.9) {.tabset .tabset-pills}
+
+#### R
+
+```{r ets-components}
+autoplot(fit)
+```
+
+#### Python
+
+```{python ets-components-py}
+st = fit.states()
+fig, axes = plt.subplots(4, 1, figsize=(8, 7), sharex=True)
+for ax, (lab, v) in zip(axes, [("observed", np.r_[np.nan, aust.to_numpy()]), ("level", st["level"]),
+                               ("slope", st["slope"]), ("season", st["s1"])]):
+    ax.plot(np.asarray(v)); ax.set_ylabel(lab);
+axes[0].set_title("Components of ETS(M,A,M) method"); plt.tight_layout(); plt.show();
+```
+
+### Innovation residuals vs response residuals (Figure 7.10) {.tabset .tabset-pills}
+
+For multiplicative-error models the **innovation residuals** $\hat\varepsilon_t$ are relative
+errors, unlike the **response residuals** $y_t - \hat y_t$.
+
+#### R
+
+```{r ets-resid}
+cbind("Residuals" = residuals(fit), "Forecast errors" = residuals(fit, type = "response")) %>%
+  autoplot(facet = TRUE) + xlab("Year") + ylab("")
+```
+
+#### Python
+
+```{python ets-resid-py}
+fig, axes = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
+axes[0].plot(fpp.ts_time(aust), fit.residuals.to_numpy()); axes[0].set_ylabel("Residuals");
+axes[1].plot(fpp.ts_time(aust), fit.response_residuals().to_numpy()); axes[1].set_ylabel("Forecast errors");
+plt.tight_layout(); plt.show()
+```
+
+# 7.7 Forecasting with ETS models
+
+Point forecasts: iterate the model equations with all future errors set to zero
+(for ETS(M,A,N): $\hat y_{T+1|T} = \ell_T + b_T$, $\hat y_{T+2|T} = \ell_T + 2b_T$, …).
+For models with multiplicative seasonality these are **not** the means of the forecast
+distribution, but the difference is usually small.
+
+**Prediction intervals** $\hat y_{T+h|T} \pm c\,\sigma_h$: analytic formulas exist for most
+models (Table 7.8); for the others (and for `simulate = TRUE`) they come from many simulated
+future sample paths, optionally bootstrapping the residuals.
+
+### Forecasts from ETS(M,A,M) (Figure 7.11) {.tabset .tabset-pills}
+
+#### R
+
+```{r ets-fc}
+fc_ets <- forecast(fit, h = 8)
+autoplot(fc_ets) + ylab("International visitor night in Australia (millions)")
+fc_ets
+```
+
+#### Python
+
+```{python ets-fc-py}
+fc_ets = fit.forecast(h=8)
+fpp.plot_forecast(fc_ets, ylab="International visitor nights in Australia (millions)"); plt.show();
+fc_ets.summary().round(3)
+```
+
+### Simulated and bootstrapped prediction intervals {.tabset .tabset-pills}
+
+#### R
+
+```{r ets-sim}
+set.seed(1)
+fc_sim  <- forecast(fit, h = 8, simulate = TRUE, npaths = 5000)
+fc_boot <- forecast(fit, h = 8, simulate = TRUE, bootstrap = TRUE, npaths = 5000)
+round(cbind(analytic_95 = fc_ets$upper[, 2] - fc_ets$lower[, 2],
+            simulated_95 = fc_sim$upper[, 2] - fc_sim$lower[, 2],
+            bootstrap_95 = fc_boot$upper[, 2] - fc_boot$lower[, 2]), 2)
+```
+
+#### Python
+
+```{python ets-sim-py}
+paths = c7.simulate(fit, nsim=8, npaths=5000, seed=1)
+boot = c7.simulate(fit, nsim=8, npaths=5000, seed=1, bootstrap=True)
+width = lambda p: np.quantile(p, 0.975, axis=0) - np.quantile(p, 0.025, axis=0)
+pd.DataFrame({"analytic_95": (fc_ets.upper[95] - fc_ets.lower[95]).to_numpy(),
+              "simulated_95": width(paths), "bootstrap_95": width(boot)},
+             index=fc_ets.mean.index).round(2)
+```
+
+The three ways of computing the interval agree closely: the normal-error assumption is
+reasonable for this series.
+
+# Model testing — every model used in this chapter
+
+Two test beds, so that every method/model of the chapter is evaluated on data it has not seen:
+
+1. **Non-seasonal methods** on `livestock`: train 1961–2000, test 2001–2007 (7 years):
+   naïve and mean benchmarks, SES, Holt, damped Holt, exponential trend (ETS(M,M,N), Holt's method
+   with a multiplicative trend) and automatic ETS.
+2. **Seasonal methods and all 15 ETS models** on `austourists`: train 2005–2013,
+   test 2014–2015 (8 quarters): seasonal naïve benchmark, HW additive, HW multiplicative,
+   damped HW (additive and multiplicative), automatic ETS and every admissible ETS model.
+
+### 1. Non-seasonal methods {.tabset .tabset-pills}
+
+#### R
+
+```{r test-nonseasonal}
+tr1 <- window(livestock, end = 2000); te1 <- window(livestock, start = 2001); h1 <- length(te1)
+fc1 <- list(
+  "Naive (benchmark)"  = naive(tr1, h = h1),
+  "Mean (benchmark)"   = meanf(tr1, h = h1),
+  "SES"                = ses(tr1, h = h1),
+  "Holt"               = holt(tr1, h = h1),
+  "Damped Holt"        = holt(tr1, damped = TRUE, h = h1),
+  # holt(exponential = TRUE) uses MSE estimation, which fails to converge on this series,
+  # so the exponential-trend model ETS(M,M,N) is fitted by maximum likelihood instead
+  "Exponential trend"  = forecast(ets(tr1, model = "MMN", allow.multiplicative.trend = TRUE), h = h1),
+  "ETS (auto)"         = forecast(ets(tr1), h = h1))
+res1_r <- t(sapply(fc1, function(f) accuracy(f, te1)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+round(res1_r[order(res1_r[, "RMSE"]), ], 3)
+```
+
+#### Python
+
+```{python test-nonseasonal-py}
+livestock = fpp.load("livestock")
+tr1 = fpp.window(livestock, end=2000); te1 = fpp.window(livestock, start=2001); h1 = len(te1)
+fc1 = {
+    "Naive (benchmark)": fpp.naive(tr1, h=h1),
+    "Mean (benchmark)": fpp.meanf(tr1, h=h1),
+    "SES": c7.ses(tr1, h=h1),
+    "Holt": c7.holt(tr1, h=h1),
+    "Damped Holt": c7.holt(tr1, damped=True, h=h1),
+    "Exponential trend": c7.ets(tr1, "MMN", allow_multiplicative_trend=True).forecast(h1),
+    "ETS (auto)": c7.ets(tr1).forecast(h1),
+}
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+res1_py = pd.DataFrame({k: fpp.accuracy(f, te1).loc["Test set", cols] for k, f in fc1.items()}).T
+res1_py.sort_values("RMSE").round(3)
+```
+
+### 2. Seasonal methods and every ETS model {.tabset .tabset-pills}
+
+#### R
+
+```{r test-seasonal}
+tr2 <- window(austourists, start = 2005, end = c(2013, 4)); te2 <- window(austourists, start = 2014)
+h2 <- length(te2)
+fc2 <- list(
+  "Seasonal naive (benchmark)" = snaive(tr2, h = h2),
+  "HW additive"                = hw(tr2, seasonal = "additive", h = h2),
+  "HW multiplicative"          = hw(tr2, seasonal = "multiplicative", h = h2),
+  "HW additive damped"         = hw(tr2, seasonal = "additive", damped = TRUE, h = h2),
+  "HW multiplicative damped"   = hw(tr2, seasonal = "multiplicative", damped = TRUE, h = h2),
+  "ETS (auto)"                 = forecast(ets(tr2), h = h2))
+for (i in seq_len(nrow(cands))) {
+  cc <- cands[i, ]
+  f <- ets(tr2, model = paste0(cc$e, substr(cc$t, 1, 1), cc$s), damped = cc$t == "Ad")
+  fc2[[f$method]] <- forecast(f, h = h2)
+}
+res2_r <- t(sapply(fc2, function(f) accuracy(f, te2)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+round(res2_r[order(res2_r[, "RMSE"]), ], 3)
+```
+
+#### Python
+
+```{python test-seasonal-py}
+austourists = fpp.load("austourists")
+tr2 = fpp.window(austourists, start=2005, end=(2013, 4)); te2 = fpp.window(austourists, start=2014)
+h2 = len(te2)
+fc2 = {
+    "Seasonal naive (benchmark)": fpp.snaive(tr2, h=h2),
+    "HW additive": c7.hw(tr2, seasonal="additive", h=h2),
+    "HW multiplicative": c7.hw(tr2, seasonal="multiplicative", h=h2),
+    "HW additive damped": c7.hw(tr2, seasonal="additive", damped=True, h=h2),
+    "HW multiplicative damped": c7.hw(tr2, seasonal="multiplicative", damped=True, h=h2),
+    "ETS (auto)": c7.ets(tr2).forecast(h2),
+}
+for e in ["A", "M"]:
+    for tr in ["N", "A", "Ad"]:
+        for s in ["N", "A", "M"]:
+            if e == "A" and s == "M":
+                continue
+            f = c7.ets(tr2, model=e + tr[0] + s, damped=(tr == "Ad"))
+            fc2[f.method] = f.forecast(h2)
+res2_py = pd.DataFrame({k: fpp.accuracy(f, te2).loc["Test set", cols] for k, f in fc2.items()}).T
+res2_py.sort_values("RMSE").round(3)
+```
+
+### What the tests show
+
+* **Non-seasonal (`livestock`).** The trend methods beat the naïve and mean benchmarks; with
+  a steadily rising series, methods that keep a trend (Holt, exponential trend, damped Holt)
+  do better than SES, which projects a flat line. Damping protects against over-shooting
+  but here the trend continued, so the undamped methods are competitive on this short test.
+* **Seasonal (`austourists`).** Every seasonal ETS model clearly beats the non-seasonal ones
+  (which ignore the strong quarterly pattern) and most beat the seasonal naïve benchmark.
+  Multiplicative-seasonal models (ETS(M,·,M), HW multiplicative) are among the best, which is
+  consistent with AICc choosing ETS(M,A,M).
+* **R vs Python.** Benchmarks agree exactly. For fully specified models both languages
+  estimate the same model; parameter estimates and therefore test errors usually agree to
+  2–3 significant digits. Where they differ more, it is because the optimisers stopped at
+  different local optima (Python's multi-start search sometimes finds a *lower* MSE than R).
+  Automatic selection can then pick a different model in the two languages — always check
+  `fit$method` / `fit.method`.
+
+# Key takeaways
+
+* SES → Holt → damped Holt → Holt-Winters: each adds one component (level, trend,
+  damping, seasonality) with its own smoothing parameter.
+* Every method has two **ETS state space models** (additive / multiplicative errors):
+  same point forecasts, different intervals; the models give likelihoods, AICc model
+  selection and prediction intervals.
+* `ets()` chooses the model automatically by AICc; `forecast()` produces point forecasts
+  and (analytic or simulated) prediction intervals.
+* Damped trends and multiplicative seasonality are often the most accurate in practice.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*

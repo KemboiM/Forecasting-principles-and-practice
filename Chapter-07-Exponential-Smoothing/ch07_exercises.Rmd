@@ -1,0 +1,867 @@
+---
+title: "Chapter 7 — Exercises"
+subtitle: "Section 7.8 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+retail_file <- file.path(proj_root, "data", "external", "retail.xlsx")
+if (!file.exists(retail_file)) {
+  dir.create(dirname(retail_file), showWarnings = FALSE, recursive = TRUE)
+  try(download.file("https://otexts.com/fpp2/extrafiles/retail.xlsx", retail_file,
+                    mode = "wb", quiet = TRUE), silent = TRUE)
+}
+has_retail <- file.exists(retail_file)
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+from scipy import optimize, stats
+import fpp
+import fpp_ch06 as c6          # stlf() for exercises 9-11, 13
+import fpp_ch07 as c7
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110});
+pd.set_option("display.width", 140); pd.set_option("display.max_columns", 20)
+retail_file = os.path.join(os.path.dirname(str(fpp.data_dir())), "data", "external", "retail.xlsx")
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+```
+
+> **Acknowledgement.** Exercises from Section 7.8 of *Forecasting: Principles and Practice*
+> (2nd ed.) by **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>).
+> The questions are paraphrased; the answers are my own.
+
+# Exercise 1 — `pigs`: SES and a hand-made prediction interval
+
+*(a) Use `ses()` to find the optimal α and ℓ₀ and forecast the next four months.
+(b) Compute a 95% interval for the first forecast as ŷ ± 1.96s (s = sd of residuals) and
+compare with R's interval.*
+
+### (a) and (b) {.tabset .tabset-pills}
+
+#### R
+
+```{r ex1}
+fc_pigs <- ses(pigs, h = 4)
+fc_pigs$model$par
+fc_pigs
+s <- sd(residuals(fc_pigs))
+c(by_hand_lo = fc_pigs$mean[1] - 1.96 * s, by_hand_hi = fc_pigs$mean[1] + 1.96 * s,
+  R_lo = fc_pigs$lower[1, "95%"], R_hi = fc_pigs$upper[1, "95%"])
+```
+
+#### Python
+
+```{python ex1-py}
+pigs = fpp.load("pigs")
+fc_pigs = c7.ses(pigs, h=4)
+print(fc_pigs.extra["fit"].par)
+print(fc_pigs.summary().round(1))
+s = np.nanstd(fc_pigs.residuals.to_numpy(), ddof=1)
+y1 = fc_pigs.mean.iloc[0]
+print({"by_hand": (round(y1 - 1.96 * s, 1), round(y1 + 1.96 * s, 1)),
+       "package": (round(fc_pigs.lower[95].iloc[0], 1), round(fc_pigs.upper[95].iloc[0], 1))})
+```
+
+α ≈ 0.30 and ℓ₀ ≈ 77 260 pigs. The hand-made interval is slightly **narrower** than the
+package's: the package uses $\hat\sigma^2 = \text{SSE}/(T-k)$ with $k=2$ estimated parameters
+(and a normal quantile), while `sd()` divides by $T-1$.
+
+# Exercise 2 — My own SES function
+
+*Write a function taking `y`, `alpha` and `level` (ℓ₀) that returns the forecast of the next
+observation. Does it give the same forecast as `ses()`?*
+
+### Hand-written SES {.tabset .tabset-pills}
+
+#### R
+
+```{r ex2}
+my_ses <- function(y, alpha, level) {
+  for (t in seq_along(y)) level <- alpha * y[t] + (1 - alpha) * level
+  level
+}
+p <- fc_pigs$model$par
+c(mine = my_ses(pigs, p["alpha"], p["l"]), ses = fc_pigs$mean[1])
+```
+
+#### Python
+
+```{python ex2-py}
+def my_ses(y, alpha, level):
+    for v in np.asarray(y, dtype=float):
+        level = alpha * v + (1 - alpha) * level
+    return level
+
+p = fc_pigs.extra["fit"].par
+print({"mine": my_ses(pigs, p["alpha"], p["l"]), "ses": fc_pigs.mean.iloc[0]})
+```
+
+Yes — identical (to machine precision) when given the same α and ℓ₀.
+
+# Exercise 3 — Estimating α and ℓ₀ by minimising the SSE
+
+*Return the SSE instead, then use `optim()` to find α and ℓ₀. Same values as `ses()`?*
+
+### SSE + optimiser {.tabset .tabset-pills}
+
+#### R
+
+```{r ex3}
+my_sse <- function(par, y) {
+  alpha <- par[1]; level <- par[2]; sse <- 0
+  for (t in seq_along(y)) {
+    sse <- sse + (y[t] - level)^2              # one-step error: y_t - l_{t-1}
+    level <- alpha * y[t] + (1 - alpha) * level
+  }
+  sse
+}
+opt <- optim(c(0.5, pigs[1]), my_sse, y = pigs, method = "L-BFGS-B",
+             lower = c(1e-4, -Inf), upper = c(0.9999, Inf))
+rbind(optim = opt$par, ses = fc_pigs$model$par)
+```
+
+#### Python
+
+```{python ex3-py}
+def my_sse(par, y):
+    alpha, level = par
+    sse = 0.0
+    for v in np.asarray(y, dtype=float):
+        sse += (v - level) ** 2
+        level = alpha * v + (1 - alpha) * level
+    return sse
+
+opt = optimize.minimize(my_sse, x0=[0.5, pigs.iloc[0]], args=(pigs,), method="L-BFGS-B",
+                        bounds=[(1e-4, 0.9999), (None, None)])
+pd.DataFrame({"optimiser": opt.x, "ses": [p["alpha"], p["l"]]}, index=["alpha", "l0"]).round(4)
+```
+
+Very close but not identical: the SSE surface is flat in ℓ₀ (a change of a few hundred pigs
+barely changes the SSE), so different optimisers stop at slightly different points.
+
+# Exercise 4 — One function that estimates and forecasts
+
+### Combined function {.tabset .tabset-pills}
+
+#### R
+
+```{r ex4}
+my_ses_fit <- function(y) {
+  opt <- optim(c(0.5, y[1]), my_sse, y = y, method = "L-BFGS-B",
+               lower = c(1e-4, -Inf), upper = c(0.9999, Inf))
+  list(alpha = opt$par[1], l0 = opt$par[2], forecast = my_ses(y, opt$par[1], opt$par[2]))
+}
+unlist(my_ses_fit(pigs))
+fc_pigs$mean[1]
+```
+
+#### Python
+
+```{python ex4-py}
+def my_ses_fit(y):
+    opt = optimize.minimize(my_sse, x0=[0.5, float(np.asarray(y)[0])], args=(y,), method="L-BFGS-B",
+                            bounds=[(1e-4, 0.9999), (None, None)])
+    a, l0 = opt.x
+    return {"alpha": a, "l0": l0, "forecast": my_ses(y, a, l0)}
+
+print(my_ses_fit(pigs), fc_pigs.mean.iloc[0])
+```
+
+# Exercise 5 — `books`: SES for paperback and hardcover sales
+
+### (a) Plot and features {.tabset .tabset-pills}
+
+#### R
+
+```{r ex5a}
+autoplot(books) + ggtitle("Daily book sales") + xlab("Day") + ylab("Books sold")
+```
+
+#### Python
+
+```{python ex5a-py}
+books = fpp.load("books")
+fpp.autoplot(books, title="Daily book sales", xlab="Day", ylab="Books sold"); plt.show();
+```
+
+30 days of sales; both series trend **upwards** with a lot of day-to-day noise; no obvious
+weekly seasonality; hardcover sales grow a little faster.
+
+### (b) SES forecasts and (c) training RMSE {.tabset .tabset-pills}
+
+#### R
+
+```{r ex5b}
+pb <- books[, "Paperback"]; hc <- books[, "Hardcover"]
+ses_pb <- ses(pb, h = 4); ses_hc <- ses(hc, h = 4)
+gridExtra::grid.arrange(autoplot(ses_pb) + ylab("Paperback"), autoplot(ses_hc) + ylab("Hardcover"))
+c(paperback = accuracy(ses_pb)[, "RMSE"], hardcover = accuracy(ses_hc)[, "RMSE"])
+```
+
+#### Python
+
+```{python ex5b-py}
+def col(df, name):
+    s = df[name]; s.attrs = dict(df.attrs); return s
+pb, hc = col(books, "Paperback"), col(books, "Hardcover")
+ses_pb, ses_hc = c7.ses(pb, h=4), c7.ses(hc, h=4)
+fig, ax = plt.subplots(2, 1, figsize=(8, 6))
+fpp.plot_forecast(ses_pb, ax=ax[0], ylab="Paperback"); fpp.plot_forecast(ses_hc, ax=ax[1], ylab="Hardcover");
+plt.tight_layout(); plt.show()
+print({"paperback": fpp.accuracy(ses_pb).loc["Training set", "RMSE"],
+       "hardcover": fpp.accuracy(ses_hc).loc["Training set", "RMSE"]})
+```
+
+# Exercise 6 — Holt's method on `books`
+
+### (a) Holt forecasts and (b) RMSE vs SES {.tabset .tabset-pills}
+
+#### R
+
+```{r ex6a}
+holt_pb <- holt(pb, h = 4); holt_hc <- holt(hc, h = 4)
+rbind(SES = c(paperback = accuracy(ses_pb)[, "RMSE"], hardcover = accuracy(ses_hc)[, "RMSE"]),
+      Holt = c(accuracy(holt_pb)[, "RMSE"], accuracy(holt_hc)[, "RMSE"]))
+```
+
+#### Python
+
+```{python ex6a-py}
+holt_pb, holt_hc = c7.holt(pb, h=4), c7.holt(hc, h=4)
+rm = lambda f: fpp.accuracy(f).loc["Training set", "RMSE"]
+pd.DataFrame({"paperback": [rm(ses_pb), rm(holt_pb)], "hardcover": [rm(ses_hc), rm(holt_hc)]},
+             index=["SES", "Holt"]).round(3)
+```
+
+Holt has a lower training RMSE for both series. It uses one more parameter (the slope), so
+some improvement is automatic, but here the gain is real: both series clearly trend upward,
+and SES can only forecast a flat line.
+
+### (c) Comparing the forecasts {.tabset .tabset-pills}
+
+#### R
+
+```{r ex6c}
+gridExtra::grid.arrange(
+  autoplot(pb) + autolayer(ses_pb, series = "SES", PI = FALSE) + autolayer(holt_pb, series = "Holt", PI = FALSE) + ylab("Paperback"),
+  autoplot(hc) + autolayer(ses_hc, series = "SES", PI = FALSE) + autolayer(holt_hc, series = "Holt", PI = FALSE) + ylab("Hardcover"))
+```
+
+#### Python
+
+```{python ex6c-py}
+fig, axes = plt.subplots(2, 1, figsize=(8, 6))
+for ax, y, s_, h_, lab in [(axes[0], pb, ses_pb, holt_pb, "Paperback"), (axes[1], hc, ses_hc, holt_hc, "Hardcover")]:
+    t = fpp.ts_time(y); tf = t[-1] + np.arange(1, 5)
+    ax.plot(t, y.to_numpy(), color="black"); ax.plot(tf, s_.mean.to_numpy(), label="SES");
+    ax.plot(tf, h_.mean.to_numpy(), label="Holt"); ax.set_ylabel(lab); ax.legend();
+plt.tight_layout(); plt.show()
+```
+
+Holt's forecasts continue the upward trend and look more plausible for both series; I prefer
+Holt here (with only 30 observations a damped trend would be a safer long-run choice).
+
+### (d) 95% intervals from the RMSE vs the packages {.tabset .tabset-pills}
+
+#### R
+
+```{r ex6d}
+pi_hand <- function(f) f$mean[1] + c(-1.96, 1.96) * accuracy(f)[, "RMSE"]
+pi_pkg <- function(f) c(f$lower[1, "95%"], f$upper[1, "95%"])
+round(rbind(SES_pb_hand = pi_hand(ses_pb), SES_pb_pkg = pi_pkg(ses_pb),
+            Holt_pb_hand = pi_hand(holt_pb), Holt_pb_pkg = pi_pkg(holt_pb),
+            SES_hc_hand = pi_hand(ses_hc), SES_hc_pkg = pi_pkg(ses_hc),
+            Holt_hc_hand = pi_hand(holt_hc), Holt_hc_pkg = pi_pkg(holt_hc)), 1)
+```
+
+#### Python
+
+```{python ex6d-py}
+def pi_hand(f): return f.mean.iloc[0] + np.array([-1.96, 1.96]) * rm(f)
+def pi_pkg(f): return np.array([f.lower[95].iloc[0], f.upper[95].iloc[0]])
+pd.DataFrame({k: v for k, v in [
+    ("SES_pb_hand", pi_hand(ses_pb)), ("SES_pb_pkg", pi_pkg(ses_pb)),
+    ("Holt_pb_hand", pi_hand(holt_pb)), ("Holt_pb_pkg", pi_pkg(holt_pb)),
+    ("SES_hc_hand", pi_hand(ses_hc)), ("SES_hc_pkg", pi_pkg(ses_hc)),
+    ("Holt_hc_hand", pi_hand(holt_hc)), ("Holt_hc_pkg", pi_pkg(holt_hc))]},
+    index=["lo95", "hi95"]).T.round(1)
+```
+
+The package intervals are a little wider because they divide the SSE by $T-k$ (number of
+estimated parameters) instead of $T$.
+
+# Exercise 7 — `eggs`: experimenting with holt() options
+
+### Five variants, h = 100 {.tabset .tabset-pills}
+
+#### R
+
+```{r ex7}
+h <- 100
+f_holt  <- holt(eggs, h = h)
+f_damp  <- holt(eggs, damped = TRUE, h = h)
+f_bc    <- holt(eggs, lambda = BoxCox.lambda(eggs), h = h)
+f_dbc   <- holt(eggs, damped = TRUE, lambda = BoxCox.lambda(eggs), h = h)
+f_exp   <- holt(eggs, exponential = TRUE, h = h)
+autoplot(eggs) + autolayer(f_holt, series = "Holt", PI = FALSE) +
+  autolayer(f_damp, series = "Damped", PI = FALSE) + autolayer(f_bc, series = "Box-Cox", PI = FALSE) +
+  autolayer(f_dbc, series = "Damped + Box-Cox", PI = FALSE) + autolayer(f_exp, series = "Exponential", PI = FALSE) +
+  ylab("Price of a dozen eggs (constant $)")
+sapply(list(Holt = f_holt, Damped = f_damp, BoxCox = f_bc, Damped_BoxCox = f_dbc, Exponential = f_exp),
+       function(f) accuracy(f)[, "RMSE"])
+```
+
+#### Python
+
+```{python ex7-py}
+eggs = fpp.load("eggs"); h = 100
+lam = fpp.box_cox_lambda(eggs)
+def holt_bc(y, damped):           # holt(lambda=) = Holt on the Box-Cox scale, back-transformed
+    fit = c7.ets(y, "AAN", damped=damped, opt_crit="mse", lambda_=lam)
+    return fit.forecast(h)
+fs = {"Holt": c7.holt(eggs, h=h), "Damped": c7.holt(eggs, damped=True, h=h),
+      "Box-Cox": holt_bc(eggs, False), "Damped + Box-Cox": holt_bc(eggs, True),
+      "Exponential": c7.holt(eggs, exponential=True, h=h)}
+ax = fpp.autoplot(eggs, ylab="Price of a dozen eggs (constant $)")
+tf = fpp.ts_time(eggs)[-1] + np.arange(1, h + 1)
+for k, f in fs.items():
+    ax.plot(tf, f.mean.to_numpy(), label=k);
+ax.legend(); plt.show();
+pd.Series({k: fpp.accuracy(f).loc["Training set", "RMSE"] for k, f in fs.items()}).round(3)
+```
+
+* **Holt**: a straight declining line that eventually forecasts **negative** prices.
+* **Damped**: the decline levels off — much more sensible long-term.
+* **Box-Cox**: forecasts decline on the transformed scale and stay **positive** on the original
+  scale (curving towards zero).
+* **Exponential trend**: geometric decline, also positive.
+* The training RMSEs are all within about 26.3–26.7 — the "best" one differs between R and
+  Python because the differences are tiny. The choice should therefore be driven by the
+  plausibility of the long-run forecasts (prices must stay positive → Box-Cox or exponential
+  trend, possibly damped).
+
+# Exercise 8 — Retail series: Holt-Winters multiplicative
+
+*(Needs `data/external/retail.xlsx`; downloaded automatically from the book site if missing.)*
+
+### (a)–(e) {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8, eval = has_retail}
+retaildata <- readxl::read_excel(retail_file, skip = 1)
+myts <- ts(retaildata[["A3349873A"]], frequency = 12, start = c(1982, 4))
+autoplot(myts) + ggtitle("Retail turnover A3349873A")
+# (b) HW multiplicative, with and without damping
+hw_m  <- hw(myts, seasonal = "multiplicative")
+hw_md <- hw(myts, seasonal = "multiplicative", damped = TRUE)
+# (c) one-step (training) RMSE
+c(multiplicative = accuracy(hw_m)[, "RMSE"], damped = accuracy(hw_md)[, "RMSE"])
+# (d) residuals of the better one
+best <- if (accuracy(hw_md)[, "RMSE"] < accuracy(hw_m)[, "RMSE"]) hw_md else hw_m
+checkresiduals(best)
+# (e) test set: train to end of 2010
+tr <- window(myts, end = c(2010, 12)); te <- window(myts, start = 2011)
+f_hw <- hw(tr, seasonal = "multiplicative", damped = TRUE, h = length(te))
+f_sn <- snaive(tr, h = length(te))
+rbind(HW_damped = accuracy(f_hw, te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")],
+      seasonal_naive = accuracy(f_sn, te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")])
+```
+
+#### Python
+
+```{python ex8-py}
+if os.path.exists(retail_file):
+    retaildata = pd.read_excel(retail_file, skiprows=1)
+    myts = fpp.make_ts(retaildata["A3349873A"].to_numpy(dtype=float), start=(1982, 4), frequency=12,
+                       name="A3349873A")
+    ax_ = fpp.autoplot(myts, title="Retail turnover A3349873A"); plt.show()
+    hw_m = c7.hw(myts, seasonal="multiplicative")
+    hw_md = c7.hw(myts, seasonal="multiplicative", damped=True)
+    r1, r2 = rm(hw_m), rm(hw_md)
+    print({"multiplicative": r1, "damped": r2})
+    best = hw_md if r2 < r1 else hw_m
+    lb = fpp.checkresiduals(best.extra["fit"].residuals, df=0, m=12,
+                            title=f"Residuals from {best.method}")
+    tr = fpp.window(myts, end=(2010, 12)); te = fpp.window(myts, start=2011)
+    f_hw = c7.hw(tr, seasonal="multiplicative", damped=True, h=len(te))
+    f_sn = fpp.snaive(tr, h=len(te))
+    print(pd.DataFrame({"HW_damped": fpp.accuracy(f_hw, te).loc["Test set", cols],
+                        "seasonal_naive": fpp.accuracy(f_sn, te).loc["Test set", cols]}).T.round(3))
+else:
+    print("retail.xlsx not found -- download https://otexts.com/fpp2/extrafiles/retail.xlsx into data/external/")
+```
+
+**(a)** Multiplicative seasonality is needed because the seasonal swings (especially the
+December peak) **grow with the level** of the series. **(c)** The damped and undamped
+methods usually have very similar one-step RMSE; unless the undamped one is clearly better I
+prefer the damped one for its safer long-run behaviour. **(d)** Look at the ACF and the
+Ljung-Box p-value: a p-value below 0.05 means autocorrelation remains and the intervals are
+too narrow. **(e)** Compare the test-set RMSE with the seasonal naïve benchmark of
+Exercise 3.7 — for retail series, damped multiplicative HW normally beats it.
+
+# Exercise 9 — Retail: STL on Box-Cox data + ETS on the seasonally adjusted series
+
+### STL + ETS vs Holt-Winters {.tabset .tabset-pills}
+
+#### R
+
+```{r ex9, eval = has_retail}
+lam <- BoxCox.lambda(tr)
+f_stl <- stlf(tr, lambda = lam, h = length(te))       # mstl on Box-Cox data + ETS on seasadj
+rbind(STL_ETS = accuracy(f_stl, te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")],
+      HW_damped = accuracy(f_hw, te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")])
+```
+
+#### Python
+
+```{python ex9-py}
+if os.path.exists(retail_file):
+    lam = fpp.box_cox_lambda(tr)
+    f_stl = c6.stlf(tr, lambda_=lam, h=len(te))
+    print(pd.DataFrame({"STL_ETS": fpp.accuracy(f_stl.mean.to_numpy(), te, train=tr).loc["Test set", cols],
+                        "HW_damped": fpp.accuracy(f_hw, te).loc["Test set", cols]}).T.round(3))
+```
+
+STL + ETS on the Box-Cox scale lets the seasonal pattern evolve and stabilises the variance;
+whether that beats Holt-Winters depends on the series — compare the two test-set RMSEs above
+(and remember a single test period is only one sample; Exercise 11 shows how cross-validation
+can change the verdict).
+
+# Exercise 10 — `ukcars`
+
+### (a) Plot {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10a}
+autoplot(ukcars) + ylab("Production (thousands)") + ggtitle("UK passenger vehicle production")
+```
+
+#### Python
+
+```{python ex10a-py}
+ukcars = fpp.load("ukcars")
+fpp.autoplot(ukcars, ylab="Production (thousands)", title="UK passenger vehicle production"); plt.show();
+```
+
+Quarterly, 1977Q1–2005Q1: a decline to the early 1980s, strong growth to about 2000, then a
+levelling off; clear quarterly seasonality (Q3 low) of fairly constant size.
+
+### (b) STL and seasonally adjusted data {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10b}
+stl_uk <- stl(ukcars, s.window = 7, robust = TRUE)
+autoplot(ukcars, series = "Data") + autolayer(seasadj(stl_uk), series = "Seasonally adjusted")
+```
+
+#### Python
+
+```{python ex10b-py}
+stl_uk = c6.stl_r(ukcars, s_window=7, robust=True)
+tu = fpp.ts_time(ukcars)
+fig, ax = plt.subplots(); ax.plot(tu, ukcars.to_numpy(), color="grey", label="Data")
+ax.plot(tu, c6.seasadj(stl_uk).to_numpy(), label="Seasonally adjusted"); ax.legend(); plt.show();
+```
+
+### (c) Damped additive trend, (d) Holt, (e) ETS — in-sample RMSE {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10c}
+f_damped <- stlf(ukcars, etsmodel = "AAN", damped = TRUE, h = 8)
+f_holt   <- stlf(ukcars, etsmodel = "AAN", damped = FALSE, h = 8)
+fit_ets  <- ets(ukcars); f_ets <- forecast(fit_ets, h = 8)
+fit_ets$method
+c(STL_damped = accuracy(f_damped)[, "RMSE"], STL_Holt = accuracy(f_holt)[, "RMSE"],
+  ETS = accuracy(f_ets)[, "RMSE"])
+```
+
+#### Python
+
+```{python ex10c-py}
+f_damped = c6.stlf(ukcars, etsmodel="AAN", damped=True, h=8)
+f_holt = c6.stlf(ukcars, etsmodel="AAN", damped=False, h=8)
+fit_ets = c7.ets(ukcars); f_ets = fit_ets.forecast(8)
+print(fit_ets.method)
+rmse_in = lambda f: float(np.sqrt(np.nanmean((f.x.to_numpy() - f.fitted.to_numpy()) ** 2)))
+pd.Series({"STL_damped": rmse_in(f_damped), "STL_Holt": rmse_in(f_holt), "ETS": rmse_in(f_ets)}).round(3)
+```
+
+The STL-based fits have the smaller in-sample RMSE — they benefit from a flexible seasonal
+component estimated on all the data.
+
+### (f) Compare the forecasts and (g) check residuals {.tabset .tabset-pills}
+
+#### R
+
+```{r ex10f}
+autoplot(ukcars) + autolayer(f_damped, series = "STL + damped", PI = FALSE) +
+  autolayer(f_holt, series = "STL + Holt", PI = FALSE) + autolayer(f_ets, series = "ETS", PI = FALSE) +
+  xlim(1995, 2007)
+checkresiduals(f_damped)
+```
+
+#### Python
+
+```{python ex10f-py}
+tf = tu[-1] + np.arange(1, 9) / 4
+fig, ax = plt.subplots(); m = tu >= 1995
+ax.plot(tu[m], ukcars.to_numpy()[m], color="black");
+for lab, f in [("STL + damped", f_damped), ("STL + Holt", f_holt), ("ETS", f_ets)]:
+    ax.plot(tf, f.mean.to_numpy(), label=lab);
+ax.legend(); plt.show();
+lb = fpp.checkresiduals(f_damped.residuals, df=0, m=4, title="Residuals from STL + ETS(A,Ad,N)")
+```
+
+The three sets of forecasts are similar for the first year. The **STL + damped trend**
+forecasts look most reasonable (production had levelled off, so a trend that flattens is
+plausible). Its residuals are roughly normal, but the Ljung-Box test rejects white noise
+(p ≈ 0.002): some autocorrelation (around lags 1–4) remains, so the prediction intervals may be
+a little too narrow — the point forecasts are still sensible.
+
+# Exercise 11 — `visitors`
+
+### (a) Plot {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11a}
+autoplot(visitors) + ylab("Thousands") + ggtitle("Short-term overseas visitors to Australia")
+```
+
+#### Python
+
+```{python ex11a-py}
+visitors = fpp.load("visitors")
+fpp.autoplot(visitors, ylab="Thousands", title="Short-term overseas visitors to Australia"); plt.show();
+```
+
+Monthly, May 1985 – April 2005: strong upward trend, strong seasonality whose amplitude
+**grows with the level**, and a visible dip in 2003 (SARS).
+
+### (b) Train/test split and HW multiplicative; (c) why multiplicative {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11b}
+v_tr <- window(visitors, end = c(2003, 4)); v_te <- window(visitors, start = c(2003, 5))
+hv <- length(v_te)
+f_hwm <- hw(v_tr, seasonal = "multiplicative", h = hv)
+autoplot(visitors) + autolayer(f_hwm, series = "HW multiplicative", PI = FALSE)
+```
+
+#### Python
+
+```{python ex11b-py}
+v_tr = fpp.window(visitors, end=(2003, 4)); v_te = fpp.window(visitors, start=(2003, 5))
+hv = len(v_te)
+f_hwm = c7.hw(v_tr, seasonal="multiplicative", h=hv)
+ax = fpp.autoplot(visitors, title="HW multiplicative forecasts")
+ax.plot(fpp.ts_time(v_te), f_hwm.mean.to_numpy(), label="HW multiplicative"); ax.legend(); plt.show();
+```
+
+(c) The seasonal swings are proportional to the level (small in 1985, large in 2000), so the
+seasonal component must be multiplicative.
+
+### (d) Four methods on the test set; (e) best method and residuals {.tabset .tabset-pills}
+
+#### R
+
+```{r ex11d}
+fits11 <- list(
+  "ETS"                     = forecast(ets(v_tr), h = hv),
+  "Additive ETS, Box-Cox"   = forecast(ets(v_tr, lambda = BoxCox.lambda(v_tr), additive.only = TRUE), h = hv),
+  "Seasonal naive"          = snaive(v_tr, h = hv),
+  "STL(Box-Cox) + ETS"      = stlf(v_tr, lambda = BoxCox.lambda(v_tr), h = hv),
+  "HW multiplicative"       = f_hwm)
+sapply(fits11, function(f) f$method)
+res11 <- t(sapply(fits11, function(f) accuracy(f, v_te)["Test set", c("RMSE", "MAE", "MAPE", "MASE")]))
+round(res11[order(res11[, "RMSE"]), ], 2)
+best11 <- fits11[[rownames(res11)[which.min(res11[, "RMSE"])]]]
+checkresiduals(best11)
+```
+
+#### Python
+
+```{python ex11d-py}
+lam_v = fpp.box_cox_lambda(v_tr)
+fits11 = {
+    "ETS": c7.ets(v_tr).forecast(hv),
+    "Additive ETS, Box-Cox": c7.ets(v_tr, lambda_=lam_v, additive_only=True).forecast(hv),
+    "Seasonal naive": fpp.snaive(v_tr, h=hv),
+    "STL(Box-Cox) + ETS": c6.stlf(v_tr, lambda_=lam_v, h=hv),
+    "HW multiplicative": f_hwm,
+}
+print({k: f.method for k, f in fits11.items()})
+res11 = pd.DataFrame({k: fpp.accuracy(f.mean.to_numpy(), v_te, train=v_tr).loc["Test set", cols]
+                      for k, f in fits11.items()}).T.sort_values("RMSE")
+print(res11.round(2))
+best11 = fits11[res11.index[0]]
+lb = fpp.checkresiduals(best11.residuals, df=0, m=12, title=f"Residuals from {res11.index[0]}")
+```
+
+The test period (May 2003 – April 2005) starts with the SARS slump and then recovers, which
+is hard for every method; the ranking depends on how quickly each method returns to the
+trend. In R the **STL(Box-Cox) + ETS** approach is best (just ahead of seasonal naïve), and its
+residuals pass the Ljung-Box test (p ≈ 0.15). In Python the additive ETS on Box-Cox data comes
+out best: automatic model selection and the seasonal-model estimates differ between the two
+implementations (the chosen models are printed above), and with a single unusual test period
+these differences change the ranking — exactly why part (f) uses cross-validation.
+
+### (f) Same comparison with time series cross-validation {.tabset .tabset-pills}
+
+One-step-ahead errors, starting from origins with at least 10 years of data (to keep run time down).
+
+#### R
+
+```{r ex11f}
+lam_full <- BoxCox.lambda(visitors)
+cv_funs <- list(
+  ETS = function(y, h) forecast(ets(y), h = h),
+  ETS_BoxCox = function(y, h) forecast(ets(y, lambda = lam_full, additive.only = TRUE), h = h),
+  SNaive = function(y, h) snaive(y, h = h),
+  STL_ETS = function(y, h) stlf(y, lambda = lam_full, h = h))
+cv11 <- sapply(cv_funs, function(f) {
+  e <- tsCV(visitors, f, h = 1, initial = 180)
+  c(RMSE = sqrt(mean(e^2, na.rm = TRUE)), MAE = mean(abs(e), na.rm = TRUE))
+})
+round(t(cv11), 2)
+```
+
+#### Python
+
+```{python ex11f-py}
+lam_full = fpp.box_cox_lambda(visitors)
+cv_funs = {
+    "ETS": lambda y, h: c7.ets(y).forecast(h),
+    "ETS_BoxCox": lambda y, h: c7.ets(y, lambda_=lam_full, additive_only=True).forecast(h),
+    "SNaive": lambda y, h: fpp.snaive(y, h=h),
+    "STL_ETS": lambda y, h: c6.stlf(y, lambda_=lam_full, h=h),
+}
+rows = {}
+for k, fn in cv_funs.items():
+    e = fpp.tsCV(visitors, fn, h=1, initial=180).to_numpy()
+    rows[k] = {"RMSE": np.sqrt(np.nanmean(e ** 2)), "MAE": np.nanmean(np.abs(e))}
+pd.DataFrame(rows).T.round(2)
+```
+
+Cross-validation averages over many origins rather than one unusual two-year period, so its
+ranking is more reliable — and here it is consistent across R and Python: **STL(Box-Cox) + ETS**
+is best, the ETS variants are close behind, and seasonal naïve is clearly worst. That differs
+from the single test set, where seasonal naïve looked competitive.
+
+# Exercise 12 — tsCV with ETS vs seasonal naïve on `qcement`
+
+### (a) 4-step tsCV and (b) MSE {.tabset .tabset-pills}
+
+#### R
+
+```{r ex12}
+fets <- function(y, h) forecast(ets(y), h = h)
+e_ets <- tsCV(qcement, fets, h = 4, initial = 100)   # initial = 0 for all origins (slow)
+e_sn  <- tsCV(qcement, snaive, h = 4, initial = 100)
+c(ETS = mean(e_ets[, 4]^2, na.rm = TRUE), SNaive = mean(e_sn[, 4]^2, na.rm = TRUE))
+c(missing_ets = sum(is.na(e_ets[, 4])), missing_snaive = sum(is.na(e_sn[, 4])))
+```
+
+#### Python
+
+```{python ex12-py}
+qcement = fpp.load("qcement")
+fets = lambda y, h: c7.ets(y).forecast(h)
+e_ets = fpp.tsCV(qcement, fets, h=4, initial=100).to_numpy()   # initial=0 for all origins (slow)
+e_sn = fpp.tsCV(qcement, fpp.snaive, h=4, initial=100).to_numpy()
+print({"ETS": np.nanmean(e_ets[:, 3] ** 2), "SNaive": np.nanmean(e_sn[:, 3] ** 2)})
+print({"missing_ets": int(np.isnan(e_ets[:, 3]).sum()), "missing_snaive": int(np.isnan(e_sn[:, 3]).sum())})
+```
+
+**Why missing values?** The last rows have no actual value 4 steps ahead, and the first origins
+are skipped (here deliberately with `initial = 100` to save time; with `initial = 0` the first
+few origins are also missing because the series is too short to fit ETS or even a seasonal
+naïve method). **Which is better?** Surprisingly, the two are almost tied (MSE ≈ 0.028–0.030): in R the
+seasonal naïve method is even slightly better over these origins, in Python ETS is slightly
+better. I expected ETS to win clearly; but cement production has a very stable seasonal
+pattern and its level changes in jumps that neither method anticipates 4 quarters ahead, so
+"same quarter last year" is a hard benchmark to beat at this horizon.
+
+# Exercise 13 — ets() vs snaive() vs stlf() on six series
+
+Test set = last three years of each series; RMSE shown.
+
+### Comparison {.tabset .tabset-pills}
+
+#### R
+
+```{r ex13}
+series13 <- list(ausbeer = ausbeer, bricksq = bricksq, dole = dole, a10 = a10, h02 = h02, usmelec = usmelec)
+res13 <- t(sapply(series13, function(y) {
+  h <- 3 * frequency(y); n <- length(y)
+  tr <- subset(y, end = n - h); te <- subset(y, start = n - h + 1)
+  lam <- BoxCox.lambda(tr)
+  c(ETS = accuracy(forecast(ets(tr), h = h), te)["Test set", "RMSE"],
+    SNaive = accuracy(snaive(tr, h = h), te)["Test set", "RMSE"],
+    STLF = accuracy(stlf(tr, lambda = lam, h = h), te)["Test set", "RMSE"])
+}))
+cbind(round(res13, 2), best = colnames(res13)[apply(res13, 1, which.min)])
+```
+
+#### Python
+
+```{python ex13-py}
+rows = {}
+for name in ["ausbeer", "bricksq", "dole", "a10", "h02", "usmelec"]:
+    y = fpp.load(name); h = 3 * int(fpp.frequency(y)); n = len(y)
+    tr, te = y.iloc[:n - h], y.iloc[n - h:]
+    tr.attrs = dict(y.attrs)
+    lam = fpp.box_cox_lambda(tr)
+    r = {"ETS": fpp.accuracy(c7.ets(tr).forecast(h), te).loc["Test set", "RMSE"],
+         "SNaive": fpp.accuracy(fpp.snaive(tr, h=h), te).loc["Test set", "RMSE"],
+         "STLF": fpp.accuracy(c6.stlf(tr, lambda_=lam, h=h).mean.to_numpy(), te, train=tr).loc["Test set", "RMSE"]}
+    r["best"] = min(r, key=r.get)
+    rows[name] = r
+pd.DataFrame(rows).T
+```
+
+No method wins everywhere: ETS or STLF are best for the trended/seasonal series, while the
+seasonal naïve method can win when the last year is a good guide to the next three (e.g. a
+flat seasonal series). This is why we compare several methods on a test set.
+
+# Exercise 14 — Does ets() always give good forecasts?
+
+### ets() on seven series {.tabset .tabset-pills}
+
+#### R
+
+```{r ex14, fig.height=9}
+series14 <- list(bicoal = bicoal, chicken = chicken, dole = dole, usdeaths = usdeaths,
+                 lynx = lynx, ibmclose = ibmclose, eggs = eggs)
+plots14 <- lapply(names(series14), function(nm) {
+  f <- forecast(ets(series14[[nm]]))
+  autoplot(f) + ggtitle(paste(nm, "-", f$method)) + theme(plot.title = element_text(size = 9))
+})
+gridExtra::grid.arrange(grobs = plots14, ncol = 2)
+```
+
+#### Python
+
+```{python ex14-py}
+names14 = ["bicoal", "chicken", "dole", "usdeaths", "lynx", "ibmclose", "eggs"]
+fig, axes = plt.subplots(4, 2, figsize=(9, 10)); axes = axes.ravel()
+for ax, nm in zip(axes, names14):
+    y = fpp.load(nm); fit = c7.ets(y)
+    fpp.plot_forecast(fit.forecast(), ax=ax, title=f"{nm} - {fit.method}");
+    ax.title.set_fontsize(9);
+axes[-1].axis("off"); plt.tight_layout(); plt.show();
+```
+
+**(a)** Not always. It works well for series with trend/seasonality (`usdeaths`, `chicken`,
+`eggs`), and gives honest flat forecasts with wide intervals for random-walk-like series
+(`ibmclose`, `bicoal`).
+
+**(b)** **`lynx`** is the clear failure: the series has a strong ~10-year **cycle** (not
+seasonality — the period is irregular and the data are annual), and ETS has no component
+for aperiodic cycles, so it produces a flat forecast with huge intervals. (`dole`'s
+structural jumps are also poorly handled.) ARIMA models (Chapter 8) can capture such cycles.
+
+# Exercise 15 — ETS(M,A,M) and Holt-Winters' multiplicative give the same point forecasts
+
+ETS(M,A,M): $y_t = (\ell_{t-1} + b_{t-1}) s_{t-m}(1+\varepsilon_t)$,
+$\ell_t = (\ell_{t-1}+b_{t-1})(1+\alpha\varepsilon_t)$,
+$b_t = b_{t-1} + \beta(\ell_{t-1}+b_{t-1})\varepsilon_t$,
+$s_t = s_{t-m}(1+\gamma\varepsilon_t)$.
+
+With $\hat y_{t|t-1} = (\ell_{t-1}+b_{t-1})s_{t-m}$, the relative error is
+$\varepsilon_t = \frac{y_t - \hat y_{t|t-1}}{\hat y_{t|t-1}}$. Substituting:
+
+* $\ell_t = (\ell_{t-1}+b_{t-1}) + \alpha(\ell_{t-1}+b_{t-1})\varepsilon_t
+  = (\ell_{t-1}+b_{t-1}) + \alpha\big(\tfrac{y_t}{s_{t-m}} - (\ell_{t-1}+b_{t-1})\big)
+  = \alpha\tfrac{y_t}{s_{t-m}} + (1-\alpha)(\ell_{t-1}+b_{t-1})$ — HW's level equation.
+* $b_t = b_{t-1} + \beta(\ell_{t-1}+b_{t-1})\varepsilon_t = b_{t-1} + \tfrac{\beta}{\alpha}(\ell_t - \ell_{t-1} - b_{t-1})$;
+  with $\beta^* = \beta/\alpha$: $b_t = \beta^*(\ell_t-\ell_{t-1}) + (1-\beta^*)b_{t-1}$ — HW's trend equation.
+* $s_t = s_{t-m} + \gamma s_{t-m}\varepsilon_t = s_{t-m} + \gamma\big(\tfrac{y_t}{\ell_{t-1}+b_{t-1}} - s_{t-m}\big)$
+  $= \gamma\tfrac{y_t}{\ell_{t-1}+b_{t-1}} + (1-\gamma)s_{t-m}$ — HW's seasonal equation.
+
+Point forecasts set future $\varepsilon = 0$: $\hat y_{T+h|T} = (\ell_T + h b_T)s_{T+h-m(k+1)}$,
+identical to Holt-Winters' multiplicative method. ∎
+
+### Numerical check: same parameters, same forecasts {.tabset .tabset-pills}
+
+#### R
+
+```{r ex15}
+aust <- window(austourists, start = 2005)
+fit_mam <- ets(aust, model = "MAM", damped = FALSE)
+# Holt-Winters recursion written out by hand with the ETS(M,A,M) states:
+x <- fit_mam$states[nrow(fit_mam$states), ]
+l <- x["l"]; b <- x["b"]; s <- rev(x[grep("^s", names(x))])   # s_{T-m+1}, ..., s_T
+hw_hand <- sapply(1:8, function(h) (l + h * b) * s[(h - 1) %% 4 + 1])
+round(cbind(ETS_MAM = forecast(fit_mam, h = 8)$mean, HW_by_hand = hw_hand), 4)
+```
+
+#### Python
+
+```{python ex15-py}
+aust = fpp.window(fpp.load("austourists"), start=2005)
+fit_mam = c7.ets(aust, "MAM")
+x = np.asarray(fit_mam.model["states"])[-1]
+l, b, s = x[0], x[1], x[2:6][::-1]           # s_{T-m+1}, ..., s_T
+hw_hand = np.array([(l + h * b) * s[(h - 1) % 4] for h in range(1, 9)])
+pd.DataFrame({"ETS_MAM": fit_mam.forecast(8).mean.to_numpy(), "HW_by_hand": hw_hand}).round(4)
+```
+
+# Exercise 16 — Forecast variance of ETS(A,N,N)
+
+For ETS(A,N,N): $y_t = \ell_{t-1} + \varepsilon_t$, $\ell_t = \ell_{t-1} + \alpha\varepsilon_t$.
+Iterating from $T$: $\ell_{T+j} = \ell_T + \alpha\sum_{i=1}^{j}\varepsilon_{T+i}$, so
+$$y_{T+h} = \ell_{T+h-1} + \varepsilon_{T+h} = \ell_T + \alpha\sum_{i=1}^{h-1}\varepsilon_{T+i} + \varepsilon_{T+h}.$$
+The errors are independent with variance $\sigma^2$, hence
+$$\sigma_h^2 = \text{Var}(y_{T+h}\mid \ell_T) = \alpha^2(h-1)\sigma^2 + \sigma^2 = \sigma^2\big[1 + \alpha^2(h-1)\big]. \;∎$$
+
+# Exercise 17 — 95% prediction interval for ETS(A,N,N)
+
+With Gaussian errors the forecast distribution is $N(\ell_T,\ \sigma^2[1+\alpha^2(h-1)])$, so
+$$\ell_T \pm 1.96\,\sigma\sqrt{1 + \alpha^2(h-1)}.$$
+
+### Check exercises 16–17 against the software {.tabset .tabset-pills}
+
+#### R
+
+```{r ex16}
+fit_ann <- ets(oil, model = "ANN")
+lT <- as.numeric(tail(fit_ann$states[, "l"], 1)); a <- unname(fit_ann$par["alpha"]); sig <- sqrt(fit_ann$sigma2)
+h <- 1:5
+by_formula <- cbind(lo = lT - 1.96 * sig * sqrt(1 + a^2 * (h - 1)), hi = lT + 1.96 * sig * sqrt(1 + a^2 * (h - 1)))
+fc <- forecast(fit_ann, h = 5, level = 95)
+round(cbind(by_formula, R_lo = fc$lower[, 1], R_hi = fc$upper[, 1]), 3)
+```
+
+#### Python
+
+```{python ex16-py}
+fit_ann = c7.ets(fpp.load("oil"), "ANN")
+lT = np.asarray(fit_ann.model["states"])[-1, 0]; a = fit_ann.par["alpha"]; sig = np.sqrt(fit_ann.sigma2)
+h = np.arange(1, 6)
+fc = fit_ann.forecast(5, level=(95,))
+pd.DataFrame({"lo": lT - stats.norm.ppf(0.975) * sig * np.sqrt(1 + a ** 2 * (h - 1)),
+              "hi": lT + stats.norm.ppf(0.975) * sig * np.sqrt(1 + a ** 2 * (h - 1)),
+              "pkg_lo": fc.lower[95].to_numpy(), "pkg_hi": fc.upper[95].to_numpy()}).round(3)
+```
+
+The formula reproduces the package intervals exactly (up to 1.96 vs the exact normal quantile).
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*
