@@ -1,0 +1,514 @@
+---
+title: "Chapter 6 — Exercises"
+subtitle: "Section 6.9 · Forecasting: Principles and Practice (2nd ed.) · solutions in R and Python"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+library(seasonal)
+retail_file <- file.path(proj_root, "data", "external", "retail.xlsx")
+if (!file.exists(retail_file)) {
+  dir.create(dirname(retail_file), showWarnings = FALSE, recursive = TRUE)
+  try(download.file("https://otexts.com/fpp2/extrafiles/retail.xlsx", retail_file,
+                    mode = "wb", quiet = TRUE), silent = TRUE)
+}
+has_retail <- file.exists(retail_file)
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+import fpp_ch06 as c6
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+pd.set_option("display.width", 140); pd.set_option("display.max_columns", 20)
+retail_file = os.path.join(os.path.dirname(str(fpp.data_dir())), "data", "external", "retail.xlsx")
+```
+
+> **Acknowledgement.** Exercises from Section 6.9 of *Forecasting: Principles and Practice*
+> (2nd ed.) by **Rob J Hyndman and George Athanasopoulos** (<https://otexts.com/fpp2/>).
+> The questions are paraphrased; the answers are my own.
+
+# Exercise 1 — A 3×5 MA is a weighted 7-term MA
+
+*Show that a 3×5 MA is equivalent to a 7-term weighted moving average with weights
+0.067, 0.133, 0.200, 0.200, 0.200, 0.133, 0.067.*
+
+A 5-MA is $\frac15(y_{t-2}+\dots+y_{t+2})$. Taking a 3-MA of that averages three consecutive
+5-MAs centred at $t-1, t, t+1$:
+$$\tfrac13\cdot\tfrac15\big[(y_{t-3}+\dots+y_{t+1}) + (y_{t-2}+\dots+y_{t+2}) + (y_{t-1}+\dots+y_{t+3})\big].$$
+Count how often each $y$ appears: $y_{t\pm3}$ once, $y_{t\pm2}$ twice, $y_{t-1}, y_t, y_{t+1}$ three times.
+So the weights are $\tfrac{1}{15}(1,2,3,3,3,2,1) = (0.067, 0.133, 0.2, 0.2, 0.2, 0.133, 0.067)$. ∎
+
+### Numerical check {.tabset .tabset-pills}
+
+#### R
+
+```{r ex1}
+w <- convolve(rep(1/3, 3), rev(rep(1/5, 5)), type = "open")
+round(w, 3)
+# applying the weights equals a 3-MA of a 5-MA
+x <- elecsales
+all.equal(as.numeric(stats::filter(x, w)), as.numeric(ma(ma(x, 5), 3)))
+```
+
+#### Python
+
+```{python ex1-py}
+w = np.convolve(np.full(3, 1/3), np.full(5, 1/5))
+print(w.round(3))
+x = fpp.load("elecsales")
+print(np.allclose(c6.weighted_ma(x, w).to_numpy(), c6.ma(c6.ma(x, 5), 3).to_numpy(), equal_nan=True))
+```
+
+# Exercise 2 — Plastics: classical multiplicative decomposition and outliers
+
+## (a) Plot the data {.tabset .tabset-pills}
+
+### R
+
+```{r ex2a}
+autoplot(plastics) + ggtitle("Monthly sales of product A") + ylab("Sales (thousands)") + xlab("Year")
+```
+
+### Python
+
+```{python ex2a-py}
+plastics = fpp.load("plastics")
+fpp.autoplot(plastics, title="Monthly sales of product A", ylab="Sales (thousands)", xlab="Year"); plt.show();
+```
+
+Strong **seasonality** (peak in late summer / early autumn, low in winter) and an upward
+**trend-cycle** that flattens/dips in the final year.
+
+## (b) Classical multiplicative decomposition {.tabset .tabset-pills}
+
+### R
+
+```{r ex2b}
+dec <- decompose(plastics, type = "multiplicative")
+autoplot(dec)
+round(dec$figure, 3)       # seasonal indices
+```
+
+### Python
+
+```{python ex2b-py}
+dec = c6.classical(plastics, "multiplicative")
+ax_ = dec.plot(title="Classical multiplicative decomposition of plastics"); plt.show()
+print(dec.seasonal.iloc[:12].round(3).to_numpy())
+```
+
+## (c) Do the results support (a)?
+
+Yes: the seasonal indices range from about 0.71 (Feb) to 1.23 (Sep), confirming the
+seasonal peak, and the trend-cycle rises steadily for four years and then levels off /
+falls slightly at the end, as seen in the plot.
+
+## (d) Seasonally adjusted data {.tabset .tabset-pills}
+
+### R
+
+```{r ex2d}
+autoplot(plastics, series = "Data") + autolayer(seasadj(dec), series = "Seasonally adjusted") +
+  ylab("Sales") + ggtitle("Plastics: seasonally adjusted")
+```
+
+### Python
+
+```{python ex2d-py}
+t = fpp.ts_time(plastics)
+fig, ax = plt.subplots()
+ax.plot(t, plastics.to_numpy(), color="grey", label="Data");
+ax.plot(t, c6.seasadj(dec).to_numpy(), color="C0", label="Seasonally adjusted");
+ax.legend(); ax.set_title("Plastics: seasonally adjusted"); plt.show();
+```
+
+## (e) An outlier in the middle {.tabset .tabset-pills}
+
+### R
+
+```{r ex2e}
+p_mid <- plastics; p_mid[30] <- p_mid[30] + 500
+dec_mid <- decompose(p_mid, type = "multiplicative")
+autoplot(seasadj(dec), series = "Original") + autolayer(seasadj(dec_mid), series = "Outlier at obs 30") +
+  ylab("Seasonally adjusted sales")
+round(rbind(original = dec$figure, outlier = dec_mid$figure), 3)
+```
+
+### Python
+
+```{python ex2e-py}
+p_mid = plastics.copy(); p_mid.iloc[29] += 500
+dec_mid = c6.classical(p_mid, "multiplicative")
+fig, ax = plt.subplots()
+ax.plot(t, c6.seasadj(dec).to_numpy(), label="Original");
+ax.plot(t, c6.seasadj(dec_mid).to_numpy(), label="Outlier at obs 30");
+ax.legend(); plt.show();
+pd.DataFrame({"original": dec.seasonal.iloc[:12].to_numpy(),
+              "outlier": dec_mid.seasonal.iloc[:12].to_numpy()}).T.round(3)
+```
+
+The outlier appears almost entirely as a spike in the seasonally adjusted series (it goes
+into the remainder), but it also **distorts the seasonal index** of that month (June) and,
+through the 2×12-MA, bumps the trend-cycle for a year around it — so every June is
+adjusted slightly wrongly.
+
+## (f) Outlier near the end {.tabset .tabset-pills}
+
+### R
+
+```{r ex2f}
+p_end <- plastics; p_end[58] <- p_end[58] + 500
+dec_end <- decompose(p_end, type = "multiplicative")
+autoplot(seasadj(dec), series = "Original") + autolayer(seasadj(dec_mid), series = "Outlier middle") +
+  autolayer(seasadj(dec_end), series = "Outlier end") + ylab("Seasonally adjusted sales")
+```
+
+### Python
+
+```{python ex2f-py}
+p_end = plastics.copy(); p_end.iloc[57] += 500
+dec_end = c6.classical(p_end, "multiplicative")
+fig, ax = plt.subplots()
+for lab, d in [("Original", dec), ("Outlier middle", dec_mid), ("Outlier end", dec_end)]:
+    ax.plot(t, c6.seasadj(d).to_numpy(), label=lab);
+ax.legend(); plt.show();
+```
+
+Near the end the trend-cycle is not estimated (the last 6 values are NA), so the outlier
+cannot affect the trend; it only enters the seasonal index of its month through the detrended
+values that *are* available. In the middle it affects both trend (12 neighbouring months) and
+seasonal estimates. Either way it shows up as a spike in the adjusted series; the position
+changes *which* other values are disturbed.
+
+# Exercise 3 — Retail series decomposed with X11
+
+*Decompose your retail series (Exercise 3, Section 2.10) with X11. Does it reveal outliers or
+unusual features?* (Needs `data/external/retail.xlsx`, downloaded automatically from the book
+site if missing.)
+
+### X11 of the retail series {.tabset .tabset-pills}
+
+#### R
+
+```{r ex3, eval = has_retail}
+retaildata <- readxl::read_excel(retail_file, skip = 1)
+myts <- ts(retaildata[["A3349873A"]], frequency = 12, start = c(1982, 4))
+x11_retail <- seas(myts, x11 = "")
+autoplot(x11_retail) + ggtitle("X11 decomposition of retail series A3349873A")
+# largest remainders (potential outliers)
+rem <- remainder(x11_retail)
+head(sort(abs(rem - 1), decreasing = TRUE), 5)
+```
+
+#### Python
+
+```{python ex3-py}
+if os.path.exists(retail_file):
+    retaildata = pd.read_excel(retail_file, skiprows=1)
+    myts = fpp.make_ts(retaildata["A3349873A"].to_numpy(dtype=float), start=(1982, 4), frequency=12,
+                       name="A3349873A")
+    x11_retail = c6.x13(myts, "x11")
+    ax_ = x11_retail.plot(title="X11 decomposition of retail series A3349873A"); plt.show()
+    rem = (x11_retail.remainder - 1).abs().sort_values(ascending=False)
+    print(rem.head(5))
+else:
+    print("retail.xlsx not found -- download https://otexts.com/fpp2/extrafiles/retail.xlsx "
+          "into data/external/")
+```
+
+What to look for: X11's remainder shows **spikes** (e.g. around the GST introduction in July
+2000, when spending was brought forward into June and dropped in July), and the seasonal
+component **changes shape over time** (a growing December peak), which a classical
+decomposition would not reveal. The automatic outlier detection in X-13 also lists additive
+outliers / level shifts in the model summary (`summary(x11_retail)` in R).
+
+# Exercise 4 — Australian civilian labour force (Figures 6.16–6.17)
+
+*(Figures in the book; no dataset is supplied, so this is a written answer.)*
+
+**(a)** The STL decomposition shows a smooth, almost linear **upward trend** from about 6.5
+million to 9 million persons over 1978–1995, which dominates the series. The **seasonal
+component** is small (roughly ±100 thousand, i.e. about 1–2% of the level) and changes slowly
+— the seasonal sub-series plot shows March and December gaining, and January/August
+falling, over time. The **remainder** is mostly within ±100 thousand, except for a cluster of
+large **negative** values in 1991–1992. Note the scales: the trend panel spans thousands,
+while the seasonal and remainder panels span only hundreds.
+
+**(b)** Yes. The 1991/1992 recession is visible as a flattening of the trend-cycle and,
+especially, as the large negative remainders in 1991–92: the fall in the labour force was
+sudden and was not absorbed by the (smooth) trend, so it appears in the remainder.
+
+# Exercise 5 — Canadian gas production (`cangas`)
+
+## (a) Changing seasonality {.tabset .tabset-pills}
+
+### R
+
+```{r ex5a, fig.height=4}
+autoplot(cangas) + ylab("Billion cubic metres") + ggtitle("Canadian gas production")
+ggsubseriesplot(cangas) + ylab("Billion cubic metres")
+ggseasonplot(cangas) + ylab("Billion cubic metres")
+```
+
+### Python
+
+```{python ex5a-py}
+cangas = fpp.load("cangas")
+fpp.autoplot(cangas, title="Canadian gas production", ylab="Billion cubic metres"); plt.show();
+fpp.subseriesplot(cangas, ylab="Billion cubic metres"); plt.show();
+fpp.seasonplot(cangas, year_labels=False, ylab="Billion cubic metres"); plt.show();
+```
+
+Seasonality is small in the 1960s, becomes much stronger in the 1970s–80s (high winter
+production, summer dip) and weakens again in the 1990s–2000s. Likely causes: changes in
+demand (winter heating, more gas-fired power), storage capacity and export contracts to the
+US — once storage and pipelines expanded, production could be smoothed across the year.
+
+## (b) STL with a flexible seasonal window {.tabset .tabset-pills}
+
+### R
+
+```{r ex5b}
+stl_gas <- stl(cangas, s.window = 13, robust = TRUE)
+autoplot(stl_gas) + ggtitle("STL decomposition of cangas (s.window = 13)")
+```
+
+### Python
+
+```{python ex5b-py}
+stl_gas = c6.stl_r(cangas, s_window=13, robust=True)
+ax_ = stl_gas.plot(title="STL decomposition of cangas (s.window = 13)"); plt.show()
+```
+
+## (c) Compare with SEATS and X11 {.tabset .tabset-pills}
+
+### R
+
+```{r ex5c, fig.height=6}
+seats_gas <- seas(cangas); x11_gas <- seas(cangas, x11 = "")
+gridExtra::grid.arrange(
+  autoplot(seats_gas) + ggtitle("SEATS"), autoplot(x11_gas) + ggtitle("X11"), ncol = 2)
+```
+
+### Python
+
+```{python ex5c-py}
+seats_gas = c6.x13(cangas, "seats"); x11_gas = c6.x13(cangas, "x11")
+print("SEATS:", seats_gas.type, " X11:", x11_gas.type)
+ax_ = seats_gas.plot(title="SEATS"); plt.show()
+ax_ = x11_gas.plot(title="X11"); plt.show()
+```
+
+STL is **additive** (seasonal component in billions of cubic metres) while X-13 chose a log
+transformation, so SEATS and X11 give **multiplicative** seasonal factors (ratios). The
+seasonal shapes agree: weak → strong → weaker seasonality. X11 and SEATS have smoother
+trends and put more of the irregular behaviour into the remainder; STL with
+`s.window = 13` lets the seasonal component change faster.
+
+# Exercise 6 — Brick production (`bricksq`) with STL
+
+## (a) STL with fixed and changing seasonality {.tabset .tabset-pills}
+
+### R
+
+```{r ex6a}
+stl_fixed <- stl(bricksq, s.window = "periodic")
+stl_flex  <- stl(bricksq, s.window = 7)
+gridExtra::grid.arrange(autoplot(stl_fixed) + ggtitle("periodic"),
+                        autoplot(stl_flex) + ggtitle("s.window = 7"), ncol = 2)
+```
+
+### Python
+
+```{python ex6a-py}
+bricksq = fpp.load("bricksq")
+stl_fixed = c6.stl_r(bricksq, s_window="periodic")
+stl_flex = c6.stl_r(bricksq, s_window=7)
+ax_ = stl_fixed.plot(title="periodic"); plt.show()
+ax_ = stl_flex.plot(title="s.window = 7"); plt.show()
+```
+
+## (b) Seasonally adjusted data {.tabset .tabset-pills}
+
+### R
+
+```{r ex6b}
+autoplot(bricksq, series = "Data") + autolayer(seasadj(stl_flex), series = "Seasonally adjusted") +
+  ylab("Million bricks")
+```
+
+### Python
+
+```{python ex6b-py}
+tb = fpp.ts_time(bricksq)
+fig, ax = plt.subplots()
+ax.plot(tb, bricksq.to_numpy(), color="grey", label="Data");
+ax.plot(tb, c6.seasadj(stl_flex).to_numpy(), label="Seasonally adjusted");
+ax.legend(); plt.show();
+```
+
+## (c) Naive forecasts of the adjusted data {.tabset .tabset-pills}
+
+### R
+
+```{r ex6c}
+autoplot(naive(seasadj(stl_flex), h = 8)) + ylab("Million bricks")
+```
+
+### Python
+
+```{python ex6c-py}
+fpp.plot_forecast(fpp.naive(c6.seasadj(stl_flex), h=8), ylab="Million bricks"); plt.show();
+```
+
+## (d) Reseasonalise with stlf() {.tabset .tabset-pills}
+
+### R
+
+```{r ex6d}
+fc_bricks <- stlf(bricksq, method = "naive", s.window = 7)
+autoplot(fc_bricks) + ylab("Million bricks")
+```
+
+### Python
+
+```{python ex6d-py}
+fc_bricks = c6.stlf(bricksq, method="naive", s_window=7)
+fpp.plot_forecast(fc_bricks, ylab="Million bricks"); plt.show();
+```
+
+## (e) Residuals {.tabset .tabset-pills}
+
+### R
+
+```{r ex6e}
+checkresiduals(fc_bricks)
+```
+
+### Python
+
+```{python ex6e-py}
+lb = fpp.checkresiduals(fc_bricks.residuals, df=0, m=4, title="Residuals from STL + Random walk")
+```
+
+The residuals are **autocorrelated** (significant spikes at the first lags and a small
+Ljung-Box p-value): the naïve method leaves structure in the adjusted series.
+
+## (f) Robust STL {.tabset .tabset-pills}
+
+### R
+
+```{r ex6f}
+fc_bricks_rob <- stlf(bricksq, method = "naive", s.window = 7, robust = TRUE)
+round(cbind(normal = fc_bricks$mean, robust = fc_bricks_rob$mean), 1)
+checkresiduals(fc_bricks_rob, plot = FALSE)
+```
+
+### Python
+
+```{python ex6f-py}
+fc_bricks_rob = c6.stlf(bricksq, method="naive", s_window=7, robust=True)
+print(pd.DataFrame({"normal": fc_bricks.mean, "robust": fc_bricks_rob.mean}).round(1))
+lb = fpp.checkresiduals(fc_bricks_rob.residuals, df=0, m=4, plot=False)
+```
+
+The robust fit moves unusual quarters (e.g. the early-1980s dips) into the remainder; the
+forecasts change only slightly and the residuals are still autocorrelated — not much difference.
+
+## (g) stlf() vs snaive() on the last two years {.tabset .tabset-pills}
+
+### R
+
+```{r ex6g}
+train <- window(bricksq, end = c(1992, 3)); test <- window(bricksq, start = c(1992, 4))
+f_stlf <- stlf(train, method = "naive", s.window = 7, h = length(test))
+f_snaive <- snaive(train, h = length(test))
+autoplot(bricksq) + autolayer(f_stlf, series = "stlf", PI = FALSE) +
+  autolayer(f_snaive, series = "snaive", PI = FALSE) + xlim(1985, 1995)
+rbind(stlf = accuracy(f_stlf, test)["Test set", c("RMSE", "MAE", "MAPE", "MASE")],
+      snaive = accuracy(f_snaive, test)["Test set", c("RMSE", "MAE", "MAPE", "MASE")])
+```
+
+### Python
+
+```{python ex6g-py}
+train = fpp.window(bricksq, end=(1992, 3)); test = fpp.window(bricksq, start=(1992, 4))
+f_stlf = c6.stlf(train, method="naive", s_window=7, h=len(test))
+f_snaive = fpp.snaive(train, h=len(test))
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+pd.DataFrame({"stlf": fpp.accuracy(f_stlf.mean.to_numpy(), test, train=train).loc["Test set", cols],
+              "snaive": fpp.accuracy(f_snaive, test).loc["Test set", cols]}).T.round(3)
+```
+
+**stlf()** is more accurate on the last two years: it starts from the most recent level of
+the seasonally adjusted series, whereas seasonal naïve repeats last year's values, which
+were higher than the recent level.
+
+# Exercise 7 — `writing` with stlf()
+
+### Choosing method and Box-Cox {.tabset .tabset-pills}
+
+#### R
+
+```{r ex7}
+autoplot(writing) + ggtitle("Sales of printing and writing paper")
+lam <- BoxCox.lambda(writing); lam
+fc_w <- stlf(writing, method = "rwdrift", lambda = lam)
+autoplot(fc_w) + ylab("Sales")
+```
+
+#### Python
+
+```{python ex7-py}
+writing = fpp.load("writing")
+fpp.autoplot(writing, title="Sales of printing and writing paper"); plt.show();
+lam = fpp.box_cox_lambda(writing); print(round(lam, 4))
+fc_w = c6.stlf(writing, method="rwdrift", lambda_=lam)
+fpp.plot_forecast(fc_w, ylab="Sales"); plt.show();
+```
+
+The series has a clear **upward trend**, so `method = "rwdrift"` is appropriate (naïve would
+forecast a flat line). The seasonal variation changes a little with the level, so a mild
+Box-Cox transformation (λ chosen by Guerrero's method) is used; the result is similar
+without it.
+
+# Exercise 8 — `fancy` with stlf()
+
+### Choosing method and Box-Cox {.tabset .tabset-pills}
+
+#### R
+
+```{r ex8}
+autoplot(fancy) + ggtitle("Sales of a souvenir shop")
+fc_f <- stlf(fancy, method = "rwdrift", lambda = 0)
+autoplot(fc_f) + ylab("Sales")
+```
+
+#### Python
+
+```{python ex8-py}
+fancy = fpp.load("fancy")
+fpp.autoplot(fancy, title="Sales of a souvenir shop"); plt.show();
+fc_f = c6.stlf(fancy, method="rwdrift", lambda_=0)
+fpp.plot_forecast(fc_f, ylab="Sales"); plt.show();
+```
+
+`fancy` grows strongly and its seasonal peaks (December, plus March surf festival) grow in
+proportion to the level — classic **multiplicative** behaviour, so a **log** transformation
+(λ = 0) is used, and **rwdrift** captures the upward trend. Forecasts back-transformed from
+the log scale keep the growing seasonal swings, with wide, asymmetric prediction intervals.
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts. <https://otexts.com/fpp2/>*

@@ -1,0 +1,706 @@
+---
+title: "Chapter 6 — Time series decomposition"
+subtitle: "Study notes in R and Python · Forecasting: Principles and Practice (2nd ed.)"
+author: "Milsort Kemboi"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: false
+    code_folding: show
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+source("../R/setup.R")
+library(seasonal)
+```
+
+```{python setup-py, include=FALSE}
+import os, sys, warnings
+sys.path.insert(0, os.path.abspath("../python"))
+warnings.filterwarnings("ignore")
+import numpy as np, pandas as pd, matplotlib.pyplot as plt
+import fpp
+import fpp_ch06 as c6          # ma(), classical(), stl_r(), x13(), stlf(), strength() ...
+plt.rcParams.update({"figure.figsize": (8, 4.2), "figure.dpi": 110})
+pd.set_option("display.width", 140); pd.set_option("display.max_columns", 20)
+```
+
+> **Acknowledgement.** These are my personal study notes for **Chapter 6** of
+> *Forecasting: Principles and Practice* (2nd ed.) by **Rob J Hyndman and George
+> Athanasopoulos** (OTexts, 2018, <https://otexts.com/fpp2/>). I follow the authors'
+> teaching section by section; the ideas, structure, datasets and exercises are theirs.
+> The explanations are summarised in my own words, and every code step is shown twice:
+> **R** (as in the book) and **Python** (my translation).
+
+# Learning goals
+
+* Split a series into **trend-cycle**, **seasonal** and **remainder** components.
+* Compute **moving averages** (m-MA, 2×m-MA, weighted MAs) by hand and with software.
+* Run **classical**, **X11**, **SEATS** and **STL** decompositions and know their strengths.
+* Compute **seasonally adjusted** data and the **strength** of trend and seasonality.
+* **Forecast with a decomposition** (STL + a non-seasonal method, `stlf()`).
+
+> **Python note.** `python/fpp_ch06.py` reproduces R's functions with R's defaults:
+> `c6.stl_r()` passes exactly the same settings as `stats::stl` to statsmodels' STL, and
+> `c6.x13()` runs the **same X-13ARIMA-SEATS program** that R's `seasonal` package uses
+> (the `x13binary` package's executable), with the same default specification. So the
+> Python decompositions match R's to many decimal places.
+
+# 6.1 Time series components
+
+Three components (Chapter 2): **trend-cycle** $T_t$ (trend and cycle combined),
+**seasonal** $S_t$ and **remainder** $R_t$ (everything else).
+
+* **Additive**: $y_t = S_t + T_t + R_t$ — use when the seasonal swings / variation around
+  the trend do **not** change with the level of the series.
+* **Multiplicative**: $y_t = S_t \times T_t \times R_t$ — use when the variation grows
+  with the level (common in economic series).
+* A log transformation turns a multiplicative decomposition into an additive one:
+  $\log y_t = \log S_t + \log T_t + \log R_t$.
+
+**Seasonally adjusted** data remove the seasonal component: $y_t - S_t$ (additive) or
+$y_t / S_t$ (multiplicative). They contain trend-cycle **and remainder**, so they are not
+smooth — "downturns" in seasonally adjusted series can be misleading. Use the trend-cycle
+to look for turning points.
+
+Example: new orders index for electrical equipment in the euro area (`elecequip`).
+
+### Trend-cycle and data (Figure 6.1) {.tabset .tabset-pills}
+
+#### R
+
+```{r fig61}
+fit <- stl(elecequip, s.window = 7, t.window = 13, robust = TRUE)
+autoplot(elecequip, series = "Data") +
+  autolayer(trendcycle(fit), series = "Trend-cycle") +
+  xlab("Year") + ylab("New orders index") +
+  ggtitle("Electrical equipment manufacturing (Euro area)") +
+  scale_colour_manual(values = c("gray", "red"), breaks = c("Data", "Trend-cycle"))
+```
+
+#### Python
+
+```{python fig61-py}
+elecequip = fpp.load("elecequip")
+fit = c6.stl_r(elecequip, s_window=7, t_window=13, robust=True)
+t = fpp.ts_time(elecequip)
+fig, ax = plt.subplots()
+ax.plot(t, elecequip.to_numpy(), color="grey", label="Data");
+ax.plot(t, fit.trend.to_numpy(), color="red", label="Trend-cycle");
+ax.set_title("Electrical equipment manufacturing (Euro area)"); ax.set_ylabel("New orders index");
+ax.legend(); plt.show();
+```
+
+### The additive decomposition (Figure 6.2) {.tabset .tabset-pills}
+
+#### R
+
+```{r fig62}
+autoplot(fit) + xlab("Year")
+```
+
+#### Python
+
+```{python fig62-py}
+ax_ = fit.plot(title="STL decomposition of elecequip"); plt.show()
+```
+
+### Seasonally adjusted data (Figure 6.3) {.tabset .tabset-pills}
+
+#### R
+
+```{r fig63}
+autoplot(elecequip, series = "Data") +
+  autolayer(seasadj(fit), series = "Seasonally Adjusted") +
+  xlab("Year") + ylab("New orders index") +
+  ggtitle("Electrical equipment manufacturing (Euro area)") +
+  scale_colour_manual(values = c("gray", "blue"), breaks = c("Data", "Seasonally Adjusted"))
+```
+
+#### Python
+
+```{python fig63-py}
+fig, ax = plt.subplots()
+ax.plot(t, elecequip.to_numpy(), color="grey", label="Data");
+ax.plot(t, c6.seasadj(fit).to_numpy(), color="blue", label="Seasonally adjusted");
+ax.set_title("Electrical equipment manufacturing (Euro area)"); ax.legend(); plt.show();
+```
+
+# 6.2 Moving averages
+
+Classical decomposition starts by estimating the trend-cycle with a **moving average**.
+
+An **m-MA** with $m = 2k + 1$:
+$$\hat{T}_t = \frac{1}{m}\sum_{j=-k}^{k} y_{t+j}.$$
+Averaging nearby values removes randomness and leaves a smooth trend-cycle. Larger $m$ ⇒
+smoother curve; $k$ values are lost at each end.
+
+### A 5-MA of electricity sales (Table 6.1, Figure 6.5) {.tabset .tabset-pills}
+
+#### R
+
+```{r ma5}
+ma(elecsales, 5)
+autoplot(elecsales, series = "Data") +
+  autolayer(ma(elecsales, 5), series = "5-MA") +
+  xlab("Year") + ylab("GWh") + ggtitle("Annual electricity sales: South Australia") +
+  scale_colour_manual(values = c("Data" = "grey50", "5-MA" = "red"), breaks = c("Data", "5-MA"))
+```
+
+#### Python
+
+```{python ma5-py}
+elecsales = fpp.load("elecsales")
+ma5 = c6.ma(elecsales, 5)
+print(pd.DataFrame({"Sales": elecsales, "5-MA": ma5}).round(2))
+fig, ax = plt.subplots()
+ax.plot(fpp.ts_time(elecsales), elecsales.to_numpy(), color="grey", label="Data");
+ax.plot(fpp.ts_time(elecsales), ma5.to_numpy(), color="red", label="5-MA");
+ax.set_title("Annual electricity sales: South Australia"); ax.set_ylabel("GWh"); ax.legend(); plt.show();
+```
+
+### Different orders: 3, 5, 7, 9-MA (Figure 6.6) {.tabset .tabset-pills}
+
+#### R
+
+```{r ma-orders, fig.height=6}
+plots <- lapply(c(3, 5, 7, 9), function(k)
+  autoplot(elecsales, series = "Data") + autolayer(ma(elecsales, k), series = paste0(k, "-MA")) +
+    ggtitle(paste0(k, "-MA")) + theme(legend.position = "none") + ylab("GWh"))
+gridExtra::grid.arrange(grobs = plots, ncol = 2)
+```
+
+#### Python
+
+```{python ma-orders-py}
+fig, axes = plt.subplots(2, 2, figsize=(8, 6), sharey=True)
+for ax, k in zip(axes.ravel(), [3, 5, 7, 9]):
+    ax.plot(fpp.ts_time(elecsales), elecsales.to_numpy(), color="grey");
+    ax.plot(fpp.ts_time(elecsales), c6.ma(elecsales, k).to_numpy(), color="red");
+    ax.set_title(f"{k}-MA");
+plt.tight_layout(); plt.show()
+```
+
+## Moving averages of moving averages
+
+An **even-order** MA is not symmetric, so we take a second MA of the first:
+a **2×4-MA** on quarterly data is
+$\hat{T}_t = \tfrac18 y_{t-2} + \tfrac14 y_{t-1} + \tfrac14 y_t + \tfrac14 y_{t+1} + \tfrac18 y_{t+2}$ —
+a centred, *weighted* 5-term MA. Rule: an **even** order should be followed by an even order,
+an **odd** by an odd, to stay symmetric.
+
+### 4-MA and 2×4-MA of beer production (Table 6.2) {.tabset .tabset-pills}
+
+#### R
+
+```{r ma2x4}
+beer2 <- window(ausbeer, start = 1992)
+ma4 <- ma(beer2, order = 4, centre = FALSE)
+ma2x4 <- ma(beer2, order = 4, centre = TRUE)
+head(cbind(beer2, ma4, ma2x4), 8)
+```
+
+#### Python
+
+```{python ma2x4-py}
+beer2 = fpp.window(fpp.load("ausbeer"), start=1992)
+tab = pd.DataFrame({"beer2": beer2, "ma4": c6.ma(beer2, 4, centre=False),
+                    "ma2x4": c6.ma(beer2, 4, centre=True)})
+tab.head(8)
+```
+
+## Estimating the trend-cycle with seasonal data
+
+A **2×m-MA** (m even) or an **m-MA** (m odd) gives every season equal weight, so the
+seasonality is averaged away: 2×4-MA for quarterly, 2×12-MA for monthly, 7-MA for daily data
+with weekly seasonality. Any other order leaves seasonal contamination in the trend.
+
+### 2×12-MA of the electrical equipment index (Figure 6.7) {.tabset .tabset-pills}
+
+#### R
+
+```{r ma12}
+autoplot(elecequip, series = "Data") +
+  autolayer(ma(elecequip, 12), series = "12-MA") +
+  xlab("Year") + ylab("New orders index") +
+  ggtitle("Electrical equipment manufacturing (Euro area)") +
+  scale_colour_manual(values = c("Data" = "grey", "12-MA" = "red"), breaks = c("Data", "12-MA"))
+```
+
+#### Python
+
+```{python ma12-py}
+fig, ax = plt.subplots()
+ax.plot(t, elecequip.to_numpy(), color="grey", label="Data");
+ax.plot(t, c6.ma(elecequip, 12).to_numpy(), color="red", label="2x12-MA");
+ax.set_title("Electrical equipment manufacturing (Euro area)"); ax.legend(); plt.show();
+```
+
+## Weighted moving averages
+
+Combinations of MAs are **weighted MAs**: $\hat T_t = \sum_{j=-k}^{k} a_j y_{t+j}$ with weights
+that sum to one and are symmetric. Weights that rise and fall smoothly (rather than
+switching on/off) give a smoother trend-cycle.
+
+### Weights of combined MAs {.tabset .tabset-pills}
+
+The weights of an $m_1 \times m_2$ MA are the convolution of the two equal-weight filters.
+
+#### R
+
+```{r weights}
+w2x4 <- convolve(rep(1/2, 2), rev(rep(1/4, 4)), type = "open")
+w2x12 <- convolve(rep(1/2, 2), rev(rep(1/12, 12)), type = "open")
+round(w2x4, 4)
+round(w2x12, 4)
+```
+
+#### Python
+
+```{python weights-py}
+w2x4 = np.convolve(np.full(2, 1/2), np.full(4, 1/4))
+w2x12 = np.convolve(np.full(2, 1/2), np.full(12, 1/12))
+print(w2x4.round(4)); print(w2x12.round(4))
+# a weighted MA with these weights equals the centred 2x4-MA:
+print(np.allclose(c6.weighted_ma(beer2, w2x4).dropna(), c6.ma(beer2, 4).dropna()))
+```
+
+# 6.3 Classical decomposition
+
+Assumes the **seasonal component is constant** from year to year (m seasonal indices).
+
+**Additive** (m = seasonal period):
+
+1. Trend-cycle $\hat T_t$ by a 2×m-MA (m even) or m-MA (m odd).
+2. Detrend: $y_t - \hat T_t$.
+3. Seasonal index for each season = average of the detrended values for that season, adjusted
+   to **sum to zero**; repeat for each year → $\hat S_t$.
+4. Remainder $\hat R_t = y_t - \hat T_t - \hat S_t$.
+
+**Multiplicative**: same steps with division; indices adjusted to **sum to m**;
+$\hat R_t = y_t / (\hat T_t \hat S_t)$.
+
+### Classical multiplicative decomposition (Figure 6.8) {.tabset .tabset-pills}
+
+#### R
+
+```{r classical}
+dec_mult <- decompose(elecequip, type = "multiplicative")
+autoplot(dec_mult) + xlab("Year") +
+  ggtitle("Classical multiplicative decomposition of electrical equipment index")
+round(dec_mult$figure, 4)    # the 12 seasonal indices
+```
+
+#### Python
+
+```{python classical-py}
+dec_mult = c6.classical(elecequip, type="multiplicative")
+ax_ = dec_mult.plot(title="Classical multiplicative decomposition of electrical equipment index"); plt.show()
+print(dec_mult.seasonal.iloc[:12].round(4).to_numpy())
+# statsmodels' built-in version gives the same numbers:
+from statsmodels.tsa.seasonal import seasonal_decompose
+sm = seasonal_decompose(elecequip.to_numpy(), model="multiplicative", period=12)
+print("same as statsmodels:", np.allclose(sm.seasonal, dec_mult.seasonal.to_numpy()))
+```
+
+**Problems with classical decomposition** (why it is no longer recommended):
+no trend estimate for the first/last few observations; the trend over-smooths rapid rises
+and falls; the seasonal pattern cannot change over time; it is not robust to unusual
+observations (e.g. strikes).
+
+# 6.4 X11 decomposition
+
+Developed by the US Census Bureau and Statistics Canada. Based on classical decomposition
+plus many extra steps: a trend-cycle at the ends of the series, a **seasonal component that
+varies slowly**, handling of **trading-day** variation, holidays and known predictors, and
+robustness to outliers. Monthly and quarterly data only.
+
+### X11 decomposition (Figure 6.9) {.tabset .tabset-pills}
+
+#### R
+
+```{r x11}
+fit_x11 <- seas(elecequip, x11 = "")
+autoplot(fit_x11) + ggtitle("X11 decomposition of electrical equipment index")
+```
+
+#### Python
+
+```{python x11-py}
+fit_x11 = c6.x13(elecequip, method="x11")      # same X-13 binary and spec as seas(x11="")
+print(fit_x11.type)
+ax_ = fit_x11.plot(title="X11 decomposition of electrical equipment index"); plt.show()
+```
+
+### Components and seasonally adjusted data (Figure 6.10) {.tabset .tabset-pills}
+
+`seasonal()`, `trendcycle()`, `remainder()` extract the components; `seasadj()` the adjusted series.
+
+#### R
+
+```{r x11-sa}
+autoplot(elecequip, series = "Data") +
+  autolayer(trendcycle(fit_x11), series = "Trend") +
+  autolayer(seasadj(fit_x11), series = "Seasonally Adjusted") +
+  xlab("Year") + ylab("New orders index") +
+  ggtitle("Electrical equipment manufacturing (Euro area)") +
+  scale_colour_manual(values = c("gray", "blue", "red"), breaks = c("Data", "Seasonally Adjusted", "Trend"))
+```
+
+#### Python
+
+```{python x11-sa-py}
+fig, ax = plt.subplots()
+ax.plot(t, elecequip.to_numpy(), color="grey", label="Data");
+ax.plot(t, c6.seasadj(fit_x11).to_numpy(), color="blue", label="Seasonally adjusted");
+ax.plot(t, fit_x11.trend.to_numpy(), color="red", label="Trend");
+ax.set_title("Electrical equipment manufacturing (Euro area)"); ax.legend(); plt.show();
+```
+
+### Seasonal sub-series plot of the X11 seasonal component (Figure 6.11) {.tabset .tabset-pills}
+
+Shows how each month's seasonal factor has changed over time.
+
+#### R
+
+```{r x11-subseries}
+fit_x11 %>% seasonal() %>% ggsubseriesplot() + ylab("Seasonal")
+```
+
+#### Python
+
+```{python x11-subseries-py}
+ax_ = fpp.subseriesplot(fit_x11.seasonal, title="Seasonal component (X11)", ylab="Seasonal"); plt.show()
+```
+
+# 6.5 SEATS decomposition
+
+**SEATS** = *Seasonal Extraction in ARIMA Time Series* (Bank of Spain). Uses ARIMA models
+(Chapter 8) to extract the components; monthly and quarterly data only. Results are usually
+similar to X11.
+
+### SEATS decomposition (Figure 6.12) {.tabset .tabset-pills}
+
+#### R
+
+```{r seats}
+fit_seats <- seas(elecequip)
+autoplot(fit_seats) + ggtitle("SEATS decomposition of electrical equipment index")
+```
+
+#### Python
+
+```{python seats-py}
+fit_seats = c6.x13(elecequip, method="seats")   # same as seas(elecequip)
+ax_ = fit_seats.plot(title="SEATS decomposition of electrical equipment index"); plt.show()
+```
+
+### X11 vs SEATS: do R and Python agree? {.tabset .tabset-pills}
+
+#### R
+
+```{r x13-compare}
+round(cbind(X11 = head(seasonal(fit_x11), 6), SEATS = head(seasonal(fit_seats), 6)), 5)
+```
+
+#### Python
+
+```{python x13-compare-py}
+pd.DataFrame({"X11": fit_x11.seasonal.head(6), "SEATS": fit_seats.seasonal.head(6)}).round(5)
+```
+
+# 6.6 STL decomposition
+
+**STL** = *Seasonal and Trend decomposition using Loess* (Cleveland et al., 1990).
+
+Advantages over classical / X11 / SEATS:
+
+* handles **any** seasonal period (weekly, daily, hourly …), not only monthly / quarterly;
+* the **seasonal component may change** over time, at a rate the user controls (`s.window`);
+* the **smoothness of the trend-cycle** is user-controlled (`t.window`);
+* can be **robust** to outliers (they end up in the remainder).
+
+Disadvantages: no automatic trading-day / calendar adjustment and only **additive**
+decompositions (use logs or a Box-Cox transformation for multiplicative behaviour:
+λ = 0 → multiplicative, λ = 1 → additive).
+
+Parameters: `t.window` and `s.window` are odd numbers of consecutive observations used to
+estimate the trend and seasonal components — smaller ⇒ more flexible.
+`s.window = "periodic"` forces an identical seasonal pattern every year.
+`mstl()` automates the choice (`s.window = 13` in the book; 11 in current `forecast`).
+
+### Robust STL, flexible trend, fixed seasonality (Figure 6.13) {.tabset .tabset-pills}
+
+#### R
+
+```{r stl-periodic}
+fit_stl <- stl(elecequip, t.window = 13, s.window = "periodic", robust = TRUE)
+autoplot(fit_stl)
+```
+
+#### Python
+
+```{python stl-periodic-py}
+fit_stl = c6.stl_r(elecequip, s_window="periodic", t_window=13, robust=True)
+ax_ = fit_stl.plot(title="Robust STL: t.window = 13, periodic seasonality"); plt.show()
+```
+
+### Effect of s.window and t.window {.tabset .tabset-pills}
+
+#### R
+
+```{r stl-windows, fig.height=6}
+p <- lapply(list(c(5, 13), c(21, 13), c(5, 31), c(21, 31)), function(w)
+  autoplot(seasonal(stl(elecequip, s.window = w[1], t.window = w[2]))) +
+    ggtitle(paste0("s.window=", w[1], ", t.window=", w[2])) + ylab("Seasonal"))
+gridExtra::grid.arrange(grobs = p, ncol = 2)
+```
+
+#### Python
+
+```{python stl-windows-py}
+fig, axes = plt.subplots(2, 2, figsize=(8, 6), sharey=True)
+for ax, (sw, tw) in zip(axes.ravel(), [(5, 13), (21, 13), (5, 31), (21, 31)]):
+    ax.plot(t, c6.stl_r(elecequip, s_window=sw, t_window=tw).seasonal.to_numpy(), lw=0.8);
+    ax.set_title(f"s.window={sw}, t.window={tw}", fontsize=9);
+plt.tight_layout(); plt.show()
+```
+
+### Automatic STL with mstl() {.tabset .tabset-pills}
+
+#### R
+
+```{r mstl}
+autoplot(mstl(elecequip)) + ggtitle("mstl() of electrical equipment")
+```
+
+#### Python
+
+```{python mstl-py}
+ax_ = c6.mstl_r(elecequip).plot(title="mstl() of electrical equipment"); plt.show()
+```
+
+# 6.7 Measuring strength of trend and seasonality
+
+From $y_t = T_t + S_t + R_t$ (Wang, Smith & Hyndman, 2006):
+
+$$F_T = \max\!\Big(0,\ 1 - \frac{\text{Var}(R_t)}{\text{Var}(T_t + R_t)}\Big), \qquad
+F_S = \max\!\Big(0,\ 1 - \frac{\text{Var}(R_t)}{\text{Var}(S_t + R_t)}\Big).$$
+
+Both lie between 0 and 1; values near 1 mean strong trend / strong seasonality. Handy for
+finding the most trended or most seasonal series in a large collection.
+
+### Strength of trend and seasonality for several series {.tabset .tabset-pills}
+
+#### R
+
+```{r strength}
+strength <- function(x) {
+  d <- mstl(x)
+  r <- d[, "Remainder"]; tr <- d[, "Trend"]; s <- d[, grep("Seasonal", colnames(d))]
+  c(F_T = max(0, 1 - var(r) / var(tr + r)), F_S = max(0, 1 - var(r) / var(s + r)))
+}
+round(rbind(elecequip = strength(elecequip), a10 = strength(a10), ausbeer = strength(ausbeer),
+            hsales = strength(hsales), goog = strength(ts(goog200, frequency = 5))), 3)
+```
+
+#### Python
+
+```{python strength-py}
+series = {"elecequip": elecequip, "a10": fpp.load("a10"), "ausbeer": fpp.load("ausbeer"),
+          "hsales": fpp.load("hsales"),
+          "goog": fpp.make_ts(fpp.load("goog200").to_numpy(), start=1, frequency=5)}
+pd.DataFrame({k: c6.strength(c6.mstl_r(v)) for k, v in series.items()}).T.round(3)
+```
+
+# 6.8 Forecasting with decomposition
+
+Write $y_t = \hat S_t + \hat A_t$ (additive) or $y_t = \hat S_t \hat A_t$ (multiplicative), where
+$\hat A_t$ is the **seasonally adjusted** component. Forecast the two parts separately:
+
+* $\hat S_t$: assumed (almost) unchanging → **seasonal naïve** (last year's values);
+* $\hat A_t$: any **non-seasonal** method — random walk (with drift), Holt (Ch. 7),
+  non-seasonal ARIMA (Ch. 8).
+
+Prediction intervals are "reseasonalised" in the same way, but they **ignore the uncertainty
+in the seasonal component** (usually small).
+
+### Naive forecasts of the seasonally adjusted data (Figure 6.14) {.tabset .tabset-pills}
+
+#### R
+
+```{r fc-seasadj}
+fit <- stl(elecequip, t.window = 13, s.window = "periodic", robust = TRUE)
+fit %>% seasadj() %>% naive() %>%
+  autoplot() + ylab("New orders index") + ggtitle("Naive forecasts of seasonally adjusted data")
+```
+
+#### Python
+
+```{python fc-seasadj-py}
+fit = c6.stl_r(elecequip, s_window="periodic", t_window=13, robust=True)
+fc_sa = fpp.naive(c6.seasadj(fit), h=24)
+fpp.plot_forecast(fc_sa, title="Naive forecasts of seasonally adjusted data", ylab="New orders index");
+plt.show()
+```
+
+### Reseasonalised forecasts (Figure 6.15) {.tabset .tabset-pills}
+
+#### R
+
+```{r fc-stl}
+fc_stl <- forecast(fit, method = "naive")
+autoplot(fc_stl) + ylab("New orders index")
+head(cbind(mean = fc_stl$mean, lo95 = fc_stl$lower[, 2], hi95 = fc_stl$upper[, 2]), 4)
+```
+
+#### Python
+
+```{python fc-stl-py}
+fc_stl = c6.forecast_stl(fit, method="naive", h=24)
+fpp.plot_forecast(fc_stl, ylab="New orders index"); plt.show();
+fc_stl.summary().head(4).round(3)
+```
+
+### One step: stlf() {.tabset .tabset-pills}
+
+`stlf()` = `mstl()` decomposition + a non-seasonal forecast of the adjusted series
+(ETS by default; `method = "naive"`, `"rwdrift"`, `"arima"` also possible) + reseasonalising.
+
+#### R
+
+```{r stlf}
+fc_stlf <- stlf(elecequip, method = "naive")
+autoplot(fc_stlf) + ylab("New orders index")
+fc_stlf_ets <- stlf(elecequip)          # default: ETS on the adjusted series
+fc_stlf_ets$method
+```
+
+#### Python
+
+```{python stlf-py}
+fc_stlf = c6.stlf(elecequip, method="naive")
+fpp.plot_forecast(fc_stlf, ylab="New orders index"); plt.show();
+fc_stlf_ets = c6.stlf(elecequip)        # default: ETS on the adjusted series
+print(fc_stlf_ets.method)
+```
+
+# Model testing — every model used in this chapter
+
+Every decomposition-based forecasting approach from this chapter is tested on `elecequip`:
+training data to the end of 2009, test set Jan 2010 – Mar 2012 (27 months).
+Decompositions are fitted on the training data only; the seasonal component is forecast
+with a seasonal naïve method; the adjusted series with naïve, drift, ETS or ARIMA.
+The two benchmark methods (seasonal naïve, naïve) are included for reference, and the
+decompositions themselves are "tested" by checking that their components add (or multiply)
+back to the data.
+
+### Test-set accuracy {.tabset .tabset-pills}
+
+#### R
+
+```{r model-testing}
+train <- window(elecequip, end = c(2009, 12)); test <- window(elecequip, start = 2010)
+h <- length(test)
+# helper: forecast from any decomposition = seasonal naive of S + method on seasonally adjusted
+decomp_fc <- function(sa, seas, type, h, method) {
+  f <- switch(method, naive = naive(sa, h = h), rwdrift = rwf(sa, drift = TRUE, h = h),
+              ets = forecast(ets(sa, model = "ZZN"), h = h))
+  m <- frequency(seas); n <- length(seas)
+  last <- rep(seas[(n - m + 1):n], length.out = h)
+  if (type == "additive") f$mean + last else f$mean * last
+}
+dc  <- decompose(train, type = "multiplicative")
+x11 <- seas(train, x11 = "")
+seats <- seas(train)
+stlp <- stl(train, t.window = 13, s.window = "periodic", robust = TRUE)
+fcs <- list(
+  "Seasonal naive (benchmark)"     = snaive(train, h = h)$mean,
+  "Naive (benchmark)"              = naive(train, h = h)$mean,
+  "Classical mult. + naive"        = decomp_fc(train / dc$seasonal, dc$seasonal, "multiplicative", h, "naive"),
+  "X11 + naive"                    = decomp_fc(seasadj(x11), seasonal(x11), "multiplicative", h, "naive"),
+  "SEATS + naive"                  = decomp_fc(seasadj(seats), seasonal(seats), "multiplicative", h, "naive"),
+  "STL periodic robust + naive"    = forecast(stlp, method = "naive", h = h)$mean,
+  "STL periodic robust + drift"    = forecast(stlp, method = "rwdrift", h = h)$mean,
+  "STL periodic robust + ETS"      = forecast(stlp, method = "ets", h = h)$mean,
+  "STL periodic robust + ARIMA"    = forecast(stlp, method = "arima", h = h)$mean,
+  "stlf (mstl + ETS)"              = stlf(train, h = h)$mean,
+  "stlf (mstl + naive)"            = stlf(train, h = h, method = "naive")$mean,
+  "stlf (mstl + drift)"            = stlf(train, h = h, method = "rwdrift")$mean
+)
+results_r <- t(sapply(fcs, function(f) accuracy(f, test)[1, c("RMSE", "MAE", "MAPE")]))
+# MASE (scaled by in-sample seasonal naive MAE, as accuracy(forecast_object) does)
+scale <- mean(abs(diff(train, lag = 12)))
+results_r <- cbind(results_r, MASE = sapply(fcs, function(f) mean(abs(test - f)) / scale))
+round(results_r[order(results_r[, "RMSE"]), ], 3)
+# decompositions reconstruct the data
+c(classical = max(abs(dc$trend * dc$seasonal * dc$random - train), na.rm = TRUE),
+  STL = max(abs(rowSums(stlp$time.series) - train)))
+```
+
+#### Python
+
+```{python model-testing-py}
+train = fpp.window(elecequip, end=(2009, 12)); test = fpp.window(elecequip, start=2010)
+h = len(test)
+
+def decomp_fc(dec, h, method):
+    return c6.forecast_stl(dec, h=h, method=method).mean.to_numpy()
+
+dc = c6.classical(train, "multiplicative")
+x11 = c6.x13(train, "x11"); seats = c6.x13(train, "seats")
+stlp = c6.stl_r(train, s_window="periodic", t_window=13, robust=True)
+# classical decomposition: seasonal indices are defined everywhere, so the method works as for STL
+fcs = {
+    "Seasonal naive (benchmark)":  fpp.snaive(train, h=h).mean.to_numpy(),
+    "Naive (benchmark)":           fpp.naive(train, h=h).mean.to_numpy(),
+    "Classical mult. + naive":     decomp_fc(dc, h, "naive"),
+    "X11 + naive":                 decomp_fc(x11, h, "naive"),
+    "SEATS + naive":               decomp_fc(seats, h, "naive"),
+    "STL periodic robust + naive": decomp_fc(stlp, h, "naive"),
+    "STL periodic robust + drift": decomp_fc(stlp, h, "rwdrift"),
+    "STL periodic robust + ETS":   decomp_fc(stlp, h, "ets"),
+    "STL periodic robust + ARIMA": decomp_fc(stlp, h, "arima"),
+    "stlf (mstl + ETS)":           c6.stlf(train, h=h).mean.to_numpy(),
+    "stlf (mstl + naive)":         c6.stlf(train, h=h, method="naive").mean.to_numpy(),
+    "stlf (mstl + drift)":         c6.stlf(train, h=h, method="rwdrift").mean.to_numpy(),
+}
+cols = ["RMSE", "MAE", "MAPE", "MASE"]
+results_py = pd.DataFrame({k: fpp.accuracy(v, test, train=train).loc["Test set", cols]
+                           for k, v in fcs.items()}).T.sort_values("RMSE")
+print(results_py.round(3))
+print({"classical": float(np.nanmax(np.abs(dc.trend * dc.seasonal * dc.remainder - train))),
+       "STL": float(np.max(np.abs(stlp.trend + stlp.seasonal + stlp.remainder - train)))})
+```
+
+### What the test shows
+
+* 2010–2012 is a period of recovery after the 2008–09 crash, so methods that **project the
+  latest level** of the seasonally adjusted series (naïve-type) do well, and methods that
+  extrapolate a falling trend can do badly — a reminder that decomposition forecasts are
+  only as good as the method used for the adjusted series.
+* All seasonal decompositions beat the plain **naïve** method because they put the seasonal
+  pattern back; most also beat the **seasonal naïve** benchmark.
+* X11, SEATS, classical and STL adjusted series give similar forecasts here because the
+  seasonal pattern of `elecequip` is stable.
+* **R vs Python.** Classical, STL, X11 and SEATS components are *identical* (same algorithms,
+  same settings, and the same X-13 program), so all `+ naive` / `+ drift` rows match R to
+  rounding. Rows using **ETS** or **ARIMA** on the adjusted series can differ slightly because
+  the statsforecast and `forecast` optimisers do not always stop at the same estimates.
+
+# Key takeaways
+
+* $y_t = S_t + T_t + R_t$ or $S_t \times T_t \times R_t$; logs/Box-Cox link the two.
+* Moving averages estimate the trend-cycle; use 2×m-MA (even m) to remove seasonality.
+* Classical decomposition is simple but outdated; **X11/SEATS** for official monthly or
+  quarterly statistics; **STL** for flexibility and any seasonal period.
+* Strength measures $F_T$, $F_S$ summarise how trended / seasonal a series is.
+* Forecast with decomposition: seasonal naïve for $S_t$ + any non-seasonal method for the
+  adjusted series (`stlf()`).
+
+*Reference: Hyndman, R.J., & Athanasopoulos, G. (2018). Forecasting: Principles and Practice
+(2nd ed.). OTexts: Melbourne, Australia. <https://otexts.com/fpp2/>*
